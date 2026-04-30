@@ -1,0 +1,17 @@
+{
+  "@@locale": "en",
+  "appTitle": "CVentra AI - Resume builder & ATS optimizer",
+  "appSubtitle": "Build, optimize, and get shortlisted faster.",
+  "heroTitle": "Upgrade your career in minutes.",
+  "ctaResumeTitle": "Design My Resume",
+  "ctaResumeSubtitle": "Build a professional resume with templates",
+  "ctaCoverTitle": "Craft My Cover Letter",
+  "ctaCoverSubtitle": "Generate a tailored letter instantly",
+  "ctaAtsTitle": "ATS Resume Check",
+  "ctaAtsSubtitle": "Score, analyze, and improve your resume",
+  "countryLanguageTitle": "Country & language",
+  "sheetTitle": "Country & language",
+  "sheetCountryLabel": "Country",
+  "sheetLanguageLabel": "Language",
+  "sheetDone": "Done"
+}

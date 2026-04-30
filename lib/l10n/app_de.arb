@@ -1,0 +1,17 @@
+{
+  "@@locale": "de",
+  "appTitle": "CVentra AI – Lebenslauf-Builder & ATS-Optimierer",
+  "appSubtitle": "Erstellen, optimieren und schneller in die Vorauswahl kommen.",
+  "heroTitle": "Bringe deine Karriere in Minuten auf das nächste Level.",
+  "ctaResumeTitle": "Meinen Lebenslauf erstellen",
+  "ctaResumeSubtitle": "Erstelle einen professionellen Lebenslauf mit Vorlagen",
+  "ctaCoverTitle": "Mein Anschreiben erstellen",
+  "ctaCoverSubtitle": "Sofort ein passendes Anschreiben generieren",
+  "ctaAtsTitle": "ATS-Lebenslauf-Check",
+  "ctaAtsSubtitle": "Bewerten, analysieren und deinen Lebenslauf verbessern",
+  "countryLanguageTitle": "Land & Sprache",
+  "sheetTitle": "Land & Sprache",
+  "sheetCountryLabel": "Land",
+  "sheetLanguageLabel": "Sprache",
+  "sheetDone": "Fertig"
+}

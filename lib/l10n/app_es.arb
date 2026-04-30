@@ -1,0 +1,17 @@
+{
+  "@@locale": "es",
+  "appTitle": "CVentra AI – Creador de CV y optimizador ATS",
+  "appSubtitle": "Crea, optimiza y consigue preselecciones más rápido.",
+  "heroTitle": "Mejora tu carrera en minutos.",
+  "ctaResumeTitle": "Diseñar mi CV",
+  "ctaResumeSubtitle": "Crea un CV profesional con plantillas",
+  "ctaCoverTitle": "Crear mi carta",
+  "ctaCoverSubtitle": "Genera al instante una carta personalizada",
+  "ctaAtsTitle": "Revisión ATS del CV",
+  "ctaAtsSubtitle": "Puntúa, analiza y mejora tu CV",
+  "countryLanguageTitle": "País e idioma",
+  "sheetTitle": "País e idioma",
+  "sheetCountryLabel": "País",
+  "sheetLanguageLabel": "Idioma",
+  "sheetDone": "Listo"
+}

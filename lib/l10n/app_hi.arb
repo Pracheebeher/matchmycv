@@ -1,0 +1,17 @@
+{
+  "@@locale": "hi",
+  "appTitle": "CVentra AI - रिज़्यूमे बिल्डर और ATS ऑप्टिमाइज़र",
+  "appSubtitle": "बनाएँ, ऑप्टिमाइज़ करें और तेज़ी से शॉर्टलिस्ट हों।",
+  "heroTitle": "मिनटों में अपने करियर को अपग्रेड करें।",
+  "ctaResumeTitle": "मेरा रिज़्यूमे बनाएं",
+  "ctaResumeSubtitle": "टेम्पलेट्स के साथ प्रोफेशनल रिज़्यूमे बनाएं",
+  "ctaCoverTitle": "कवर लेटर तैयार करें",
+  "ctaCoverSubtitle": "तुरंत एक टेलर्ड लेटर बनाएं",
+  "ctaAtsTitle": "ATS रिज़्यूमे चेक",
+  "ctaAtsSubtitle": "स्कोर करें, विश्लेषण करें और रिज़्यूमे सुधारें",
+  "countryLanguageTitle": "देश और भाषा",
+  "sheetTitle": "देश और भाषा",
+  "sheetCountryLabel": "देश",
+  "sheetLanguageLabel": "भाषा",
+  "sheetDone": "हो गया"
+}
