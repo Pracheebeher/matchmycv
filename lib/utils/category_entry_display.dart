@@ -51,77 +51,8 @@ class CategoryEntryDisplay {
     return '$title — ${bits.join(' — ')}';
   }
 
-  /// Removes duplicate formatted lines and drops **date-only** rows that repeat a
-  /// year/date already shown at the end of another line (e.g. comma-split imports
-  /// that created `"Award, 2020"` and a separate `"2020"` entry).
-  static List<String> sanitizeAchievementDisplayList(List<String> rawItems) {
-    bool isSoloDateLike(String s) {
-      final t = s.trim();
-      if (t.isEmpty || t.length > 28) return false;
-      if (RegExp(r'^(19|20)\d{2}$').hasMatch(t)) return true;
-      if (RegExp(r'^Q[1-4]\s*,?\s*(19|20)\d{2}$', caseSensitive: false)
-          .hasMatch(t)) {
-        return true;
-      }
-      if (RegExp(
-        r'^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+(19|20)\d{2}$',
-        caseSensitive: false,
-      ).hasMatch(t)) {
-        return true;
-      }
-      if (RegExp(r'^\d{1,2}/\d{4}$').hasMatch(t)) return true;
-      if (RegExp(r'^\d{1,2}/\d{1,2}/\d{2,4}$').hasMatch(t)) return true;
-      if (t.length <= 12 &&
-          RegExp(r'^[\d\s./\-–—]+$', caseSensitive: false).hasMatch(t)) {
-        return true;
-      }
-      return false;
-    }
-
-    final formatted = rawItems
-        .map((s) => formatAchievementLine(s.trim()))
-        .where((s) => s.isNotEmpty)
-        .toList();
-
-    final seen = <String>{};
-    final deduped = <String>[];
-    for (final f in formatted) {
-      final k = f.toLowerCase();
-      if (seen.contains(k)) continue;
-      seen.add(k);
-      deduped.add(f);
-    }
-
-    if (deduped.every((e) => !isSoloDateLike(e))) return deduped;
-
-    String? lastEmDashSegmentLower(String line) {
-      final parts = line.split('—');
-      if (parts.isEmpty) return null;
-      return parts.last.trim().toLowerCase();
-    }
-
-    return deduped.where((line) {
-      final t = line.trim();
-      if (!isSoloDateLike(t)) return true;
-      final tl = t.toLowerCase();
-      for (final other in deduped) {
-        if (identical(other, line)) continue;
-        if (isSoloDateLike(other)) continue;
-        final ol = other.toLowerCase();
-        if (ol == tl) continue;
-        if (ol.contains(tl)) return false;
-        final last = lastEmDashSegmentLower(other);
-        if (last != null && last == tl) return false;
-        if (other.contains(',')) {
-          final tail = other.split(',').last.trim().toLowerCase();
-          if (tail == tl || tail.endsWith(tl)) return false;
-        }
-      }
-      return true;
-    }).toList();
-  }
-
-  static bool _isLikelyAchievementDateOnly(String s) {
+  /// True when [s] looks like a **when** token (year, month+year, etc.), not a title.
+  static bool achievementTokenLooksLikeDateOrPeriod(String s) {
     final t = s.trim();
     if (t.isEmpty || t.length > 28) return false;
     if (RegExp(r'^(19|20)\d{2}$').hasMatch(t)) return true;
@@ -137,94 +68,135 @@ class CategoryEntryDisplay {
     }
     if (RegExp(r'^\d{1,2}/\d{4}$').hasMatch(t)) return true;
     if (RegExp(r'^\d{1,2}/\d{1,2}/\d{2,4}$').hasMatch(t)) return true;
+    if (t.length <= 12 &&
+        RegExp(r'^[\d\s./\-–—]+$', caseSensitive: false).hasMatch(t)) {
+      return true;
+    }
     return false;
   }
 
-  /// True when [s] looks like a **new** achievement bullet (do not merge into prior).
-  static bool looksLikeNewAchievementLine(String s) {
+  /// Rebuilds [Title<SEP>Where<SEP>When] storage after PDF/section imports that split
+  /// one achievement into several strings or comma-separated fragments.
+  static List<String> normalizeImportedAchievementStorage(List<String> raw) {
+    final pass1 =
+        raw.map((s) => s.trim()).where((s) => s.isNotEmpty).map(_normalizeOneAchievementCommaParts).toList();
+    return _coalesceAdjacentAchievementLines(pass1);
+  }
+
+  static String _normalizeOneAchievementCommaParts(String s) {
     final t = s.trim();
-    if (t.length < 4 || t.length > 72) return false;
-    return RegExp(
-      r'^(awarded?|received|won|selected|honou?red|named|recipient|'
-      r'employee\s+of|scholarship|fellowship|certificate|certified|'
-      r'accomplishment|achievement|recognition|award|prize|medal|distinction|'
-      r'top\s+\d)',
-      caseSensitive: false,
-    ).hasMatch(t);
-  }
-
-  static bool _shouldCoalesceAchievementContinuation(String prev, String next) {
-    if (next.contains(sep)) return false;
-    if (looksLikeNewAchievementLine(next)) return false;
-    if (_isLikelyAchievementDateOnly(prev)) return false;
-
+    if (t.isEmpty || t.contains(sep)) return t;
     final parts =
-        prev.split(sep).map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
-
-    if (_isLikelyAchievementDateOnly(next)) {
-      if (parts.length >= 3 && parts[2].isNotEmpty) return false;
-      if (parts.length >= 2 && _isLikelyAchievementDateOnly(parts[1])) {
-        return false;
-      }
-      return true;
+        t.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+    if (parts.length >= 3 &&
+        achievementTokenLooksLikeDateOrPeriod(parts.last)) {
+      final title = parts.first;
+      final when = parts.last;
+      final where = parts.sublist(1, parts.length - 1).join(', ');
+      return '$title$sep$where$sep$when';
     }
-
-    // "Where" continuation: only after a single-segment title (no sep yet).
-    if (parts.length != 1) return false;
-    if (next.length > 80) return false;
-    if (next.split(RegExp(r'\s+')).length > 12) return false;
-    return true;
+    if (parts.length == 2 &&
+        achievementTokenLooksLikeDateOrPeriod(parts.last)) {
+      return '${parts.first}$sep$sep${parts.last}';
+    }
+    return t;
   }
 
-  static String _appendAchievementContinuation(String prev, String next) {
-    final t = next.trim();
-    final parts = prev.split(sep).map((e) => e.trim()).toList();
-
-    if (_isLikelyAchievementDateOnly(t)) {
-      if (parts.length == 1) {
-        return '${parts[0]}$sep$sep$t';
-      }
-      if (parts.length == 2) {
-        return '${parts[0]}$sep${parts[1]}$sep$t';
-      }
-      if (parts.length >= 3) {
-        final a = parts[0];
-        final b = parts[1];
-        return '$a$sep$b$sep$t';
-      }
-    }
-
-    if (parts.length == 1) {
-      return '${parts[0]}$sep$t';
-    }
-    return '$prev$sep$t';
-  }
-
-  /// Merges consecutive loose lines from PDF/ATS import (`title` on one line,
-  /// `where` / `when` on the next) into `Title<SEP>Where<SEP>When` storage.
-  static List<String> coalesceLooseAchievementImports(List<String> raw) {
-    final lines =
-        raw.map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
-    if (lines.length <= 1) return lines;
-
+  static List<String> _coalesceAdjacentAchievementLines(List<String> items) {
+    if (items.length < 2) return items;
     final out = <String>[];
-    for (final s in lines) {
-      if (out.isEmpty) {
-        out.add(s);
+    var i = 0;
+    while (i < items.length) {
+      final a = items[i].trim();
+      if (a.isEmpty) {
+        i++;
         continue;
       }
-      if (looksLikeNewAchievementLine(s) || s.contains(sep)) {
-        out.add(s);
+      if (a.contains(sep)) {
+        out.add(a);
+        i++;
         continue;
       }
-      final prev = out.last;
-      if (_shouldCoalesceAchievementContinuation(prev, s)) {
-        out[out.length - 1] = _appendAchievementContinuation(prev, s);
-      } else {
-        out.add(s);
+      if (i + 2 < items.length) {
+        final b = items[i + 1].trim();
+        final c = items[i + 2].trim();
+        if (!b.contains(sep) &&
+            !c.contains(sep) &&
+            !achievementTokenLooksLikeDateOrPeriod(a) &&
+            !achievementTokenLooksLikeDateOrPeriod(b) &&
+            achievementTokenLooksLikeDateOrPeriod(c) &&
+            b.isNotEmpty &&
+            b.length <= 160 &&
+            c.length <= 56 &&
+            a.split(RegExp(r'\s+')).length <= 22) {
+          out.add('$a$sep$b$sep$c');
+          i += 3;
+          continue;
+        }
       }
+      if (i + 1 < items.length) {
+        final b = items[i + 1].trim();
+        if (!b.contains(sep) &&
+            !achievementTokenLooksLikeDateOrPeriod(a) &&
+            achievementTokenLooksLikeDateOrPeriod(b)) {
+          out.add('$a$sep$sep$b');
+          i += 2;
+          continue;
+        }
+      }
+      out.add(a);
+      i++;
     }
     return out;
+  }
+
+  /// Removes duplicate formatted lines and drops **date-only** rows that repeat a
+  /// year/date already shown at the end of another line (e.g. comma-split imports
+  /// that created `"Award, 2020"` and a separate `"2020"` entry).
+  static List<String> sanitizeAchievementDisplayList(List<String> rawItems) {
+    final formatted = rawItems
+        .map((s) => formatAchievementLine(s.trim()))
+        .where((s) => s.isNotEmpty)
+        .toList();
+
+    final seen = <String>{};
+    final deduped = <String>[];
+    for (final f in formatted) {
+      final k = f.toLowerCase();
+      if (seen.contains(k)) continue;
+      seen.add(k);
+      deduped.add(f);
+    }
+
+    if (deduped.every((e) => !achievementTokenLooksLikeDateOrPeriod(e))) {
+      return deduped;
+    }
+
+    String? lastEmDashSegmentLower(String line) {
+      final parts = line.split('—');
+      if (parts.isEmpty) return null;
+      return parts.last.trim().toLowerCase();
+    }
+
+    return deduped.where((line) {
+      final t = line.trim();
+      if (!achievementTokenLooksLikeDateOrPeriod(t)) return true;
+      final tl = t.toLowerCase();
+      for (final other in deduped) {
+        if (identical(other, line)) continue;
+        if (achievementTokenLooksLikeDateOrPeriod(other)) continue;
+        final ol = other.toLowerCase();
+        if (ol == tl) continue;
+        if (ol.contains(tl)) return false;
+        final last = lastEmDashSegmentLower(other);
+        if (last != null && last == tl) return false;
+        if (other.contains(',')) {
+          final tail = other.split(',').last.trim().toLowerCase();
+          if (tail == tl || tail.endsWith(tl)) return false;
+        }
+      }
+      return true;
+    }).toList();
   }
 
   /// When the second segment is a known proficiency [code], uses [labelForCode].

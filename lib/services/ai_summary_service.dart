@@ -47,7 +47,9 @@ class AISummaryService {
 
     final target = targetJobDescription.trim();
     if (target.isNotEmpty) {
-      final excerpt = target.length > 420 ? '${target.substring(0, 420).trim()}…' : target;
+      final excerpt = target.length > 8000
+          ? '${target.substring(0, 8000).trim()}…'
+          : target;
       buffer.writeln(
         'Career direction is oriented toward roles that match the following focus and expectations: '
         '$excerpt',
@@ -67,7 +69,7 @@ class AISummaryService {
     if (skillList.length <= 6) {
       return _joinOxford(skillList);
     }
-    final head = skillList.take(5).toList();
+    final head = skillList.take(18).toList();
     final rest = skillList.length - head.length;
     return '${_joinOxford(head)}, plus $rest additional competencies';
   }
@@ -92,7 +94,7 @@ class AISummaryService {
     if (usable.isEmpty) return '';
 
     final sentences = <String>[];
-    final maxRoles = usable.length.clamp(1, 5);
+    final maxRoles = usable.length.clamp(1, 12);
 
     for (var i = 0; i < maxRoles; i++) {
       final e = usable[i];
@@ -113,7 +115,7 @@ class AISummaryService {
       final bullets = e.description
           .map((b) => b.trim())
           .where((b) => b.isNotEmpty)
-          .take(3)
+          .take(18)
           .map(_stripTrailingPeriod)
           .toList();
 
@@ -138,8 +140,8 @@ class AISummaryService {
     if (sentences.isEmpty) return '';
     if (sentences.length == 1) return sentences.first;
 
-    final lead = sentences.take(2).join(' ');
-    if (sentences.length == 2) return lead;
+    final lead = sentences.take(5).join(' ');
+    if (sentences.length <= 5) return lead;
     return '$lead Additional roles further deepen ownership across the full delivery lifecycle.';
   }
 

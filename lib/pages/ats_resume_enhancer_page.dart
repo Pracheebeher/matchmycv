@@ -369,6 +369,27 @@ class _ATSResumeEnhancerPageState extends State<ATSResumeEnhancerPage> {
                 ),
               ),
               IconButton(
+                tooltip: AppLocalizations.of(context).printOrSavePdfTooltip,
+                onPressed: () async {
+                  final t = AppLocalizations.of(context);
+                  try {
+                    final r = await PdfService.presentSystemPrintForPdf(
+                      widget.uploadedPdf!,
+                      name: path.split('/').last,
+                    );
+                    if (!mounted) return;
+                    if (r == null) {
+                      AppToast.error(context, t.printingUnavailable);
+                    }
+                  } catch (_) {
+                    if (!mounted) return;
+                    AppToast.error(context, t.printingFailed);
+                  }
+                },
+                icon: const Icon(Icons.print_rounded),
+                color: Colors.white,
+              ),
+              IconButton(
                 tooltip: 'Full screen',
                 onPressed: () {
                   Navigator.push(

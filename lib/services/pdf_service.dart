@@ -1,17 +1,109 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../models/resume_model.dart';
 import '../utils/category_entry_display.dart';
 import '../utils/pdf_export_ats_markers.dart';
 
+/// A resume PDF written to a temp file, ready for share or in-app print.
+typedef ResumePdfExport = ({File file, String displayName});
+
 class PdfService {
+  /// ISO A4 with **no margins** for styled PNG export and preview height math.
+  ///
+  /// Width/height are the **same thousandths-of-an-inch** values Android uses for
+  /// [PrintAttributes.MediaSize.ISO_A4] (8270×11690 mils). The `printing` plugin
+  /// maps [PdfPageFormat] to a predefined [MediaSize] only when the converted
+  /// mils match within a small tolerance; using exact `21×29.7 cm` in points can
+  /// yield 8267×11692 mils and miss `ISO_A4`, so the system print UI falls back
+  /// to `UNKNOWN` and some devices default **Save as PDF** to US Letter.
+  static const PdfPageFormat styledTemplateExportPageFormat = PdfPageFormat(
+    8270 * 72 / 1000.0,
+    11690 * 72 / 1000.0,
+    marginAll: 0,
+  );
+
+  /// Same **MediaBox** as [styledTemplateExportPageFormat] with [PdfPageFormat.a4]-style
+  /// `2 cm` margins. Used for ATS / text resume [pw.MultiPage] exports so a file
+  /// opened from the share sheet (Gmail, Drive, Files) matches the styled PDF’s
+  /// A4 page size instead of metric `21×29.7 cm` points (8267×11692 mils), which
+  /// some pipelines treat as “unknown” and default to US Letter for print/preview.
+  static const PdfPageFormat documentExportPageFormat = PdfPageFormat(
+    8270 * 72 / 1000.0,
+    11690 * 72 / 1000.0,
+    marginAll: 2.0 * PdfPageFormat.cm,
+  );
+
+  /// Normalizes a preview screenshot PNG into a pixel-exact ISO A4 canvas so it
+  /// can be embedded with [pw.BoxFit.cover] / [pw.BoxFit.fill] without skew.
+  static Future<Uint8List> _normalizePreviewPngToA4(Uint8List pngBytes) async {
+    final a4w = styledTemplateExportPageFormat.width;
+    final a4h = styledTemplateExportPageFormat.height;
+
+    final codec = await ui.instantiateImageCodec(pngBytes);
+    try {
+      final frame = await codec.getNextFrame();
+      final src = frame.image;
+      try {
+        // About 2.8 px/pt: sharp enough, reasonable file size.
+        const targetW = 1654;
+        final targetH = (targetW * a4h / a4w).round();
+
+        final recorder = ui.PictureRecorder();
+        final canvas = ui.Canvas(recorder);
+        canvas.drawRect(
+          ui.Rect.fromLTWH(0, 0, targetW.toDouble(), targetH.toDouble()),
+          ui.Paint()..color = const ui.Color(0xFFFFFFFF),
+        );
+
+        final sw = src.width.toDouble();
+        final sh = src.height.toDouble();
+        final scale = math.min(targetW / sw, targetH / sh);
+        final dw = sw * scale;
+        final dh = sh * scale;
+        final dx = (targetW - dw) / 2;
+        final dy = (targetH - dh) / 2;
+
+        canvas.drawImageRect(
+          src,
+          ui.Rect.fromLTWH(0, 0, sw, sh),
+          ui.Rect.fromLTWH(dx, dy, dw, dh),
+          ui.Paint()..filterQuality = ui.FilterQuality.high,
+        );
+
+        final picture = recorder.endRecording();
+        ui.Image out;
+        try {
+          out = await picture.toImage(targetW, targetH);
+        } finally {
+          picture.dispose();
+        }
+        try {
+          final bd = await out.toByteData(format: ui.ImageByteFormat.png);
+          if (bd == null) {
+            throw StateError('Failed to encode normalized PNG.');
+          }
+          return bd.buffer.asUint8List();
+        } finally {
+          out.dispose();
+        }
+      } finally {
+        src.dispose();
+      }
+    } finally {
+      codec.dispose();
+    }
+  }
+
   static String _resumePlainTextForAts(ResumeData data) {
     final b = StringBuffer();
     void addLine(String s) {
@@ -243,7 +335,7 @@ class PdfService {
     pdf.addPage(
       pw.MultiPage(
         theme: theme,
-        pageFormat: PdfPageFormat.a4,
+        pageFormat: documentExportPageFormat,
         margin: const pw.EdgeInsets.all(20),
         maxPages: 100,
         build: (context) => [
@@ -404,10 +496,10 @@ class PdfService {
     return '${name}_${DateTime.now().millisecondsSinceEpoch}';
   }
 
-  static Future<String> shareTemplatePreviewPdf({
+  /// Builds the styled (preview) resume PDF to a temp file — does not open UI.
+  static Future<ResumePdfExport> exportTemplatePreviewPdfToTemp({
     required List<Uint8List> pagePngBytes,
     required ResumeData data,
-    Rect? sharePositionOrigin,
   }) async {
     if (pagePngBytes.isEmpty) {
       throw StateError('Nothing to export (no rendered pages).');
@@ -416,48 +508,27 @@ class PdfService {
     final base = _safeResumePdfBaseName(data);
     final displayName = '$base.pdf';
 
-    // Embed an (almost invisible) selectable text layer so ATS extractors can
-    // read the exported PDF even though the visuals come from screenshots.
-    final atsText = _resumePlainTextForAts(data);
-
     final pdf = pw.Document();
     for (final png in pagePngBytes) {
-      final img = pw.MemoryImage(png);
+      final normalized = await _normalizePreviewPngToA4(png);
+      final img = pw.MemoryImage(normalized);
       pdf.addPage(
         pw.Page(
-          pageFormat: PdfPageFormat.a4,
+          pageFormat: styledTemplateExportPageFormat,
           margin: pw.EdgeInsets.zero,
-          build: (context) => pw.Stack(
-            children: [
-              // Fill the full A4 page. `contain` letterboxes when the rasterized
-              // preview aspect ratio differs slightly from A4, leaving empty bands
-              // (often mistaken for “wrong margins” in Save / Share PDF).
-              pw.Positioned.fill(
-                child: pw.Image(img, fit: pw.BoxFit.fill),
-              ),
-              if (atsText.isNotEmpty)
-                pw.Positioned(
-                  left: 0,
-                  top: 0,
-                  right: 0,
-                  bottom: 0,
-                  child: pw.Opacity(
-                    // Not fully 0.0 so extractors don't drop it as "invisible".
-                    opacity: 0.01,
-                    child: pw.Padding(
-                      padding: const pw.EdgeInsets.all(6),
-                      child: pw.Text(
-                        atsText,
-                        style: const pw.TextStyle(
-                          fontSize: 1.2,
-                          color: PdfColors.black,
-                          lineSpacing: 1.1,
-                        ),
-                      ),
-                    ),
-                  ),
+          // Use [BoxFit.cover] so X/Y scale is identical (no anamorphic stretch).
+          // With a true A4 MediaBox and normalized PNG aspect, this still fills the page.
+          build: (_) => pw.FullPage(
+            ignoreMargins: true,
+            child: pw.Stack(
+              fit: pw.StackFit.expand,
+              children: [
+                pw.Container(color: PdfColors.white),
+                pw.Positioned.fill(
+                  child: pw.Image(img, fit: pw.BoxFit.cover),
                 ),
-            ],
+              ],
+            ),
           ),
         ),
       );
@@ -470,18 +541,61 @@ class PdfService {
       throw StateError('Export PDF was not created (exists=$exists, bytes=$len).');
     }
 
+    return (file: file, displayName: displayName);
+  }
+
+  static Future<String> shareTemplatePreviewPdf({
+    required List<Uint8List> pagePngBytes,
+    required ResumeData data,
+    Rect? sharePositionOrigin,
+  }) async {
+    final r = await exportTemplatePreviewPdfToTemp(
+      pagePngBytes: pagePngBytes,
+      data: data,
+    );
     await Share.shareXFiles(
       [
         XFile(
-          file.path,
+          r.file.path,
           mimeType: 'application/pdf',
-          name: displayName,
+          name: r.displayName,
         ),
       ],
       subject: 'Resume',
       sharePositionOrigin: sharePositionOrigin,
     );
-    return displayName;
+    return r.displayName;
+  }
+
+  /// Opens the OS **Print** / **Save as PDF** panel for an existing PDF file.
+  ///
+  /// Uses [styledTemplateExportPageFormat] so the dialog defaults to **ISO A4**
+  /// instead of US Letter where the platform honors [Printing.layoutPdf].
+  ///
+  /// Returns `null` if printing is unavailable, `true` if the user printed or
+  /// saved, `false` if they cancelled the dialog.
+  static Future<bool?> presentSystemPrintForPdf(
+    File file, {
+    String name = 'Document',
+    PdfPageFormat format = styledTemplateExportPageFormat,
+  }) async {
+    final info = await Printing.info();
+    if (!info.canPrint) {
+      return null;
+    }
+    final bytes = await file.readAsBytes();
+    var docName = name.trim();
+    if (docName.toLowerCase().endsWith('.pdf')) {
+      docName = docName.substring(0, docName.length - 4);
+    }
+    if (docName.isEmpty) docName = 'Document';
+    final printed = await Printing.layoutPdf(
+      onLayout: (PdfPageFormat _) async => bytes,
+      name: docName,
+      format: format,
+      dynamicLayout: false,
+    );
+    return printed;
   }
 
   /// Builds the resume PDF and opens the platform share sheet so the user can
@@ -494,9 +608,9 @@ class PdfService {
   /// This intentionally does NOT fall back to app-private storage silently — if
   /// the share sheet fails, callers should show an error because the user asked
   /// to save the file to a visible location.
-  static Future<String> downloadResume({
+  /// Builds the ATS-style resume PDF to a temp file — does not open UI.
+  static Future<ResumePdfExport> exportResumePdfToTemp({
     required ResumeData data,
-    Rect? sharePositionOrigin,
   }) async {
     final pdf = await _buildResumePdf(data);
     final base = _safeResumePdfBaseName(data);
@@ -507,19 +621,26 @@ class PdfService {
     if (!exists || len <= 0) {
       throw StateError('Export PDF was not created (exists=$exists, bytes=$len).');
     }
+    return (file: file, displayName: displayName);
+  }
 
+  static Future<String> downloadResume({
+    required ResumeData data,
+    Rect? sharePositionOrigin,
+  }) async {
+    final r = await exportResumePdfToTemp(data: data);
     await Share.shareXFiles(
       [
         XFile(
-          file.path,
+          r.file.path,
           mimeType: 'application/pdf',
-          name: displayName,
+          name: r.displayName,
         ),
       ],
       subject: 'Resume',
       sharePositionOrigin: sharePositionOrigin,
     );
-    return displayName;
+    return r.displayName;
   }
 
   // ================= SHARE =================
@@ -527,16 +648,13 @@ class PdfService {
     required ResumeData data,
     Rect? sharePositionOrigin,
   }) async {
-    final pdf = await _buildResumePdf(data);
-    final base = _safeResumePdfBaseName(data);
-    final file = await _savePdfToTemp(pdf, base);
-    final displayName = '$base.pdf';
+    final r = await exportResumePdfToTemp(data: data);
     await Share.shareXFiles(
       [
         XFile(
-          file.path,
+          r.file.path,
           mimeType: 'application/pdf',
-          name: displayName,
+          name: r.displayName,
         ),
       ],
       subject: 'Resume',
@@ -702,7 +820,7 @@ class PdfService {
     pdf.addPage(
       pw.MultiPage(
         theme: await _tryLoadRobotoTheme(),
-        pageFormat: PdfPageFormat.a4,
+        pageFormat: documentExportPageFormat,
         margin: const pw.EdgeInsets.fromLTRB(56, 64, 56, 64),
         maxPages: 4,
         build: (context) {
@@ -740,7 +858,7 @@ class PdfService {
     pdf.addPage(
       pw.MultiPage(
         theme: await _tryLoadRobotoTheme(),
-        pageFormat: PdfPageFormat.a4,
+        pageFormat: documentExportPageFormat,
         margin: const pw.EdgeInsets.fromLTRB(56, 64, 56, 64),
         maxPages: 4,
         build: (context) {
@@ -797,7 +915,7 @@ class PdfService {
         // Intentionally avoid custom fonts here: some devices/builds can fail
         // while parsing embedded TTFs, which breaks Preview/Download.
         theme: null,
-        pageFormat: PdfPageFormat.a4,
+        pageFormat: documentExportPageFormat,
         margin: const pw.EdgeInsets.all(24),
         maxPages: 100,
         build: (context) => [

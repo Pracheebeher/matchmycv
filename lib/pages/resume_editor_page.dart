@@ -1,11 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:share_plus/share_plus.dart';
 import '../models/resume_model.dart';
 import '../services/pdf_service.dart';
 import '../widgets/app_buttons.dart';
 import '../widgets/app_toast.dart';
 import '../l10n/app_localizations.dart';
+import '../widgets/resume_pdf_post_export_sheet.dart';
 import '../widgets/uniform_app_bar.dart';
 
 class ResumeEditorPage extends StatelessWidget {
@@ -34,12 +36,51 @@ class ResumeEditorPage extends StatelessWidget {
               child: AppButtons.primary("Download", Icons.download, () {
                 unawaited(() async {
                   try {
-                    await PdfService.downloadResume(data: data);
+                    final t = AppLocalizations.of(context)!;
+                    final built =
+                        await PdfService.exportResumePdfToTemp(data: data);
                     if (!context.mounted) return;
-                    AppToast.success(
+                    final choice = await showResumePdfPostExportSheet(
                       context,
-                      AppLocalizations.of(context).successfullyDownloaded,
+                      strings: t,
                     );
+                    if (!context.mounted) return;
+                    switch (choice) {
+                      case ResumePdfPostExportChoice.share:
+                        await Share.shareXFiles(
+                          [
+                            XFile(
+                              built.file.path,
+                              mimeType: 'application/pdf',
+                              name: built.displayName,
+                            ),
+                          ],
+                          subject: 'Resume',
+                        );
+                        if (!context.mounted) return;
+                        AppToast.success(
+                          context,
+                          t.resumePdfExportShareHint,
+                        );
+                        break;
+                      case ResumePdfPostExportChoice.print:
+                        final pr = await PdfService.presentSystemPrintForPdf(
+                          built.file,
+                          name: built.displayName,
+                        );
+                        if (!context.mounted) return;
+                        if (pr == null) {
+                          AppToast.error(context, t.printingUnavailable);
+                        } else if (pr) {
+                          AppToast.success(
+                            context,
+                            t.resumeExportPrintComplete,
+                          );
+                        }
+                        break;
+                      case null:
+                        break;
+                    }
                   } catch (e) {
                     if (!context.mounted) return;
                     AppToast.error(

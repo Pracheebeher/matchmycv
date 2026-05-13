@@ -18,8 +18,8 @@ class AIResumeParser {
 
   static String get _effectiveOpenAiKey => _apiKeyFromEnv.trim();
 
-  /// Max characters sent to the model (large PDFs slow the API with little benefit).
-  static const int _maxCharsForModel = 10000;
+  /// Max characters sent to the model (head+tail; middle may be omitted).
+  static const int _maxCharsForModel = 28000;
 
   static const Duration _openAiTimeout = Duration(seconds: 32);
 
@@ -93,6 +93,8 @@ class AIResumeParser {
     final text = await PdfTextExtractorService.extractText(file);
     final forParse = chooseTextForLocalParse(text);
     applyQuickLocalParse(forParse.trim().isEmpty ? text : forParse, data);
+    // Full PDF text often preserves Education / bullets the cleaned parse omits.
+    _mergeEducationFromFullText(text, data);
     // If OpenAI refine is unavailable, still try to recover work history from the
     // raw extracted text (quick parse intentionally leaves experiences empty).
     _applyExperienceHeuristicFallback(text, data);
@@ -110,6 +112,7 @@ class AIResumeParser {
     final text = await PdfTextExtractorService.extractTextFromBytes(pdfBytes);
     final forParse = chooseTextForLocalParse(text);
     applyQuickLocalParse(forParse.trim().isEmpty ? text : forParse, data);
+    _mergeEducationFromFullText(text, data);
     _applyExperienceHeuristicFallback(text, data);
     _sanitizeImportedResume(data);
     mergeCoursesAndCertificationsFromFullText(text, data);
@@ -128,13 +131,15 @@ class AIResumeParser {
       chooseTextForLocalParse(fullText),
       maxChars: _maxCharsForModel,
     );
-    await _refineWithOpenAI(forModel, data);
-    if (data.experiences.isEmpty) {
-      _applyExperienceHeuristicFallback(
-        raw.isNotEmpty ? raw : fullText,
-        data,
-      );
-    }
+    await _refineWithOpenAI(forModel, data, raw.isNotEmpty ? raw : fullText);
+    // Always run heuristic merge after refine: OpenAI often truncates bullet lists,
+    // and two-column PDFs interleave headings. This merges missing bullets into
+    // existing jobs when possible (or fills experiences if the model returned none).
+    _mergeEducationFromFullText(raw.isNotEmpty ? raw : fullText, data);
+    _applyExperienceHeuristicFallback(
+      raw.isNotEmpty ? raw : fullText,
+      data,
+    );
     _sanitizeImportedResume(data);
     mergeCoursesAndCertificationsFromFullText(fullText, data);
     if (data.experiences.isEmpty) {
@@ -308,26 +313,11 @@ class AIResumeParser {
     // Prefer lines under an Education / Academic header; fall back to degree-like lines.
     final fromSection = _educationLinesFromEducationSection(lines);
     if (fromSection.isNotEmpty) {
-      data.educationList = fromSection.take(16).toList();
+      data.educationList = fromSection.take(40).toList();
     } else {
       // Avoid substring false positives (e.g. company names like "Mastercraft").
-      data.educationList = lines
-          .map((raw) => raw.replaceFirst(RegExp(r'^[•\-\*·]\s*'), '').trim())
-          .where(_quickEducationLine)
-          .map((e) {
-            final st = _structuredEducationFromFreeline(e);
-            if (st != null) return _normalizeEducationRow(st);
-            final y = _extractAnyEducationPeriod(e) ?? '';
-            return _normalizeEducationRow(
-              Education(
-                degree: e.length > 120 ? '${e.substring(0, 117)}…' : e,
-                institution: '',
-                year: y,
-              ),
-            );
-          })
-          .take(8)
-          .toList();
+      data.educationList =
+          _educationGroupedFromLooseLines(lines).take(40).toList();
     }
 
     // IMPORTANT: do not guess "experiences" from random lines here.
@@ -425,9 +415,7 @@ class AIResumeParser {
         seen.add(k);
         out.add(t);
       }
-      data.categories[key] = key == 'Achievements'
-          ? CategoryEntryDisplay.coalesceLooseAchievementImports(out)
-          : out;
+      data.categories[key] = out;
     }
 
     mergeBucket(
@@ -443,9 +431,9 @@ class AIResumeParser {
     final achMerged = data.categories['Achievements'];
     if (achMerged != null && achMerged.isNotEmpty) {
       data.categories['Achievements'] =
-          CategoryEntryDisplay.coalesceLooseAchievementImports(
-            List<String>.from(achMerged),
-          );
+          CategoryEntryDisplay.normalizeImportedAchievementStorage(
+        List<String>.from(achMerged),
+      );
     }
   }
 
@@ -785,12 +773,12 @@ class AIResumeParser {
           .toSet()
           .toList();
       if (clean.isEmpty) continue;
-      final list = e.key == 'Achievements'
-          ? CategoryEntryDisplay.coalesceLooseAchievementImports(
-              List<String>.from(clean),
-            )
-          : List<String>.from(clean);
-      data.categories[e.key] = list;
+      if (e.key == 'Achievements') {
+        data.categories[e.key] =
+            CategoryEntryDisplay.normalizeImportedAchievementStorage(clean);
+      } else {
+        data.categories[e.key] = List<String>.from(clean);
+      }
     }
   }
 
@@ -961,29 +949,64 @@ class AIResumeParser {
 
   static String _quickSummary(List<String> lines) {
     int i = 0;
-    while (i < lines.length && i < 15) {
+    while (i < lines.length && i < 120) {
       final l = lines[i].toLowerCase();
       if (l.contains('@') || RegExp(r'\+?\d[\d\s().-]{8,}').hasMatch(lines[i])) {
         i++;
         continue;
       }
-      if (l == 'summary' ||
-          l == 'professional summary' ||
-          l == 'objective' ||
-          l == 'profile') {
+      final hl = lines[i].trim().toLowerCase();
+      final looksLikeSummaryHeader =
+          hl == 'summary' ||
+              hl == 'professional summary' ||
+              hl == 'objective' ||
+              hl == 'profile' ||
+              hl == 'about me' ||
+              hl == 'about' ||
+              hl == 'career objective' ||
+              hl.startsWith('professional summary') && hl.contains(':') ||
+              hl.startsWith('profile') && hl.contains(':');
+      if (looksLikeSummaryHeader) {
         final buf = StringBuffer();
-        for (var j = i + 1; j < lines.length && j < i + 8; j++) {
+        var started = false;
+        for (var j = i + 1; j < lines.length && j < i + 120; j++) {
           final next = lines[j];
+          final nLow = next.trim().toLowerCase();
           if (RegExp(
-            r'^(experience|education|skills|projects?|employment|work history)$',
+            r'^(experience|work experience|professional experience|employment|work history|education)\b',
             caseSensitive: false,
-          ).hasMatch(next)) break;
+          ).hasMatch(nLow)) {
+            break;
+          }
+          if (RegExp(
+            r'^(summary|objective|profile|about me)\b',
+            caseSensitive: false,
+          ).hasMatch(nLow)) {
+            break;
+          }
+          // Two-column PDFs interleave these headings into the summary column.
+          if (RegExp(
+            r'^(skills|technical skills|languages?|certifications?|projects?|achievements?)\b',
+            caseSensitive: false,
+          ).hasMatch(nLow)) {
+            continue;
+          }
           if (buf.isNotEmpty) buf.writeln();
           buf.write(next);
-          if (buf.length > 480) break;
+          started = true;
+          if (buf.length > 12000) break;
         }
-        final s = buf.toString().trim();
-        if (s.isNotEmpty) return s;
+        if (started) {
+          final s = buf.toString().trim();
+          if (s.isNotEmpty) return s;
+        }
+        // Header may include text after ':' on the same line.
+        final same = lines[i].trim();
+        final colon = same.indexOf(':');
+        if (colon > 0 && colon < same.length - 1) {
+          final after = same.substring(colon + 1).trim();
+          if (after.length > 40) return after;
+        }
       }
       i++;
     }
@@ -1027,7 +1050,7 @@ class AIResumeParser {
   /// True when a single resume line is plausibly an education row (not a company name).
   static bool _quickEducationLine(String raw) {
     final t = raw.replaceFirst(RegExp(r'^[•\-\*·]\s*'), '').trim();
-    if (t.length < 10 || t.length > 180) return false;
+    if (t.length < 10 || t.length > 260) return false;
     if (_looksLikeEmploymentOrNoise(t)) return false;
     final x = t.toLowerCase();
     final degreeish = RegExp(
@@ -1052,7 +1075,7 @@ class AIResumeParser {
     final inst = e.institution.trim();
     final y = e.year.trim();
     if (d.isEmpty && inst.isEmpty && y.isEmpty) return false;
-    if (d.length > 220 || inst.length > 220) return false;
+    if (d.length > 600 || inst.length > 600) return false;
     if (_looksLikeEmploymentOrNoise('$d $inst $y')) return false;
     return true;
   }
@@ -1274,7 +1297,7 @@ class AIResumeParser {
   /// Parses one free-text education line (comma-separated or single blob + year).
   static Education? _structuredEducationFromFreeline(String raw) {
     final line = raw.trim();
-    if (line.length < 6 || line.length > 360) return null;
+    if (line.length < 6 || line.length > 520) return null;
     if (_looksLikeEmploymentOrNoise(line)) return null;
 
     // Numeric month/year ranges like `09/2020 - 05/2022`.
@@ -1414,6 +1437,45 @@ class AIResumeParser {
   /// Collects education rows after an Education / Academic section header.
   static List<Education> _educationLinesFromEducationSection(List<String> lines) {
     final out = <Education>[];
+
+    String joinWrapped(List<String> parts) {
+      final cleaned = parts
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList();
+      if (cleaned.isEmpty) return '';
+      var acc = cleaned.first;
+      for (final p in cleaned.skip(1)) {
+        if (acc.endsWith('-')) {
+          acc = acc.substring(0, acc.length - 1) + p;
+        } else {
+          acc = '$acc $p';
+        }
+      }
+      return acc.replaceAll(RegExp(r'\s+'), ' ').trim();
+    }
+
+    void flushGrouped(List<String> group, {String year = ''}) {
+      final g = group.map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+      if (g.isEmpty) return;
+      String degree = '';
+      String inst = '';
+      if (g.length >= 2 && year.trim().isNotEmpty) {
+        inst = g.last;
+        degree = joinWrapped(g.sublist(0, g.length - 1));
+      } else {
+        degree = joinWrapped(g);
+      }
+      final ed = _normalizeEducationRow(
+        Education(
+          degree: degree,
+          institution: inst,
+          year: year.trim(),
+        ),
+      );
+      if (_isPlausibleEducationRow(ed)) out.add(ed);
+    }
+
     for (var i = 0; i < lines.length; i++) {
       final low = lines[i].toLowerCase().trim();
       final isHeader = RegExp(
@@ -1425,6 +1487,7 @@ class AIResumeParser {
       if (!isHeader) continue;
 
       i++;
+      final current = <String>[];
       while (i < lines.length) {
         final raw = lines[i].trim();
         if (raw.isEmpty) {
@@ -1432,34 +1495,152 @@ class AIResumeParser {
           continue;
         }
         final nextLow = raw.toLowerCase();
+        // Hard end: primary body sections (usually start of a new left column).
         if (RegExp(
-          r'^(experience|employment|work history|professional experience|skills|technical skills|projects?|certifications?|achievements?|awards?|honou?rs?|summary|objective|references|contact)\b',
+          r'^(experience|employment|work history|professional experience|'
+          r'summary|objective|profile|references|contact)\b',
           caseSensitive: false,
         ).hasMatch(nextLow)) {
           break;
         }
+        // Two-column PDFs interleave these into the Education column — skip the line.
         if (RegExp(
-          r'^(languages?|courses?|links?|hobbies|volunteering)\b',
+          r'^(skills|technical skills|projects?|certifications?|achievements?|'
+          r'awards?|honou?rs?|languages?|courses?|links?|hobbies|volunteering)\b',
           caseSensitive: false,
         ).hasMatch(nextLow)) {
-          break;
+          i++;
+          continue;
         }
         final cleaned = raw.replaceFirst(RegExp(r'^[•\-\*·]\s*'), '').trim();
-        if (cleaned.length >= 6) {
-          var ed = _structuredEducationFromFreeline(cleaned);
-          if (ed == null) {
-            final y = _extractAnyEducationPeriod(cleaned) ?? '';
-            ed = Education(degree: cleaned, institution: '', year: y);
-          }
-          ed = _normalizeEducationRow(ed);
-          if (_isPlausibleEducationRow(ed)) {
-            out.add(ed);
+        if (cleaned.length >= 2) {
+          final y = _extractAnyEducationPeriod(cleaned);
+          if (y != null && y.trim().isNotEmpty) {
+            flushGrouped(current, year: y);
+            current.clear();
+          } else {
+            current.add(cleaned);
           }
         }
         i++;
       }
+      flushGrouped(current, year: '');
       break;
     }
+    return out;
+  }
+
+  /// Fallback: extract multi-line education blocks even when PDF text order is
+  /// column-interleaved (common in two-column templates).
+  static List<Education> _educationGroupedFromLooseLines(List<String> lines) {
+    String joinWrapped(List<String> parts) {
+      final cleaned = parts
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList();
+      if (cleaned.isEmpty) return '';
+      var acc = cleaned.first;
+      for (final p in cleaned.skip(1)) {
+        if (acc.endsWith('-')) {
+          acc = acc.substring(0, acc.length - 1) + p;
+        } else {
+          acc = '$acc $p';
+        }
+      }
+      return acc.replaceAll(RegExp(r'\s+'), ' ').trim();
+    }
+
+    void flush(List<String> group, List<Education> out, {String year = ''}) {
+      final g = group.map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+      if (g.isEmpty) return;
+      String degree = '';
+      String inst = '';
+      if (g.length >= 2 && year.trim().isNotEmpty) {
+        inst = g.last;
+        degree = joinWrapped(g.sublist(0, g.length - 1));
+      } else {
+        degree = joinWrapped(g);
+      }
+      final ed = _normalizeEducationRow(
+        Education(degree: degree, institution: inst, year: year.trim()),
+      );
+      if (_isPlausibleEducationRow(ed)) out.add(ed);
+    }
+
+    final out = <Education>[];
+    final current = <String>[];
+    String currentYear = '';
+
+    bool looksLikeSectionHeader(String low) {
+      return RegExp(
+        r'^(summary|work experience|professional experience|experience|employment|skills|technical skills|projects?|certifications?|achievements?|references|contact|languages?)\b',
+        caseSensitive: false,
+      ).hasMatch(low);
+    }
+
+    bool looksLikeEducationStartLine(String raw) {
+      final t = raw.trim();
+      if (t.isEmpty) return false;
+      final low = t.toLowerCase();
+      if (low == 'education' || low == 'academic') return false;
+      // Support very short starts like "HSE" that would fail [_quickEducationLine].
+      if (RegExp(r'^(hse|ssc|sslc|icse|cbse)\b', caseSensitive: false).hasMatch(t)) {
+        return true;
+      }
+      // Degrees / academic keywords.
+      if (RegExp(
+        r'\b(bachelor|bachelors|master|masters|mba|ph\.?\s*d\.?|doctorate|associate|diploma|degree|hse|higher\s+secondary)\b',
+        caseSensitive: false,
+      ).hasMatch(low)) {
+        return true;
+      }
+      // Fall back to the stricter single-line heuristic.
+      return _quickEducationLine(t);
+    }
+
+    for (final raw in lines) {
+      final cleaned = raw.replaceFirst(RegExp(r'^[•\-\*·]\s*'), '').trim();
+      if (cleaned.isEmpty) continue;
+      final low = cleaned.toLowerCase();
+
+      final period = _extractAnyEducationPeriod(cleaned);
+      if (period != null && period.trim().isNotEmpty) {
+        currentYear = period;
+        flush(current, out, year: currentYear);
+        current.clear();
+        currentYear = '';
+        continue;
+      }
+
+      if (current.isEmpty) {
+        if (!looksLikeEducationStartLine(cleaned)) continue;
+        current.add(cleaned);
+        continue;
+      }
+
+      // Stop a running group on a strong section boundary.
+      if (looksLikeSectionHeader(low)) {
+        flush(current, out, year: currentYear);
+        current.clear();
+        currentYear = '';
+        continue;
+      }
+
+      // Accept short follow-up lines (field, institution, location) but avoid
+      // pulling in long paragraphs.
+      if (cleaned.length <= 64 || RegExp(r'\b(university|college|institute|school)\b',
+              caseSensitive: false)
+          .hasMatch(cleaned)) {
+        current.add(cleaned);
+      } else {
+        // Too long: likely narrative text; close the group.
+        flush(current, out, year: currentYear);
+        current.clear();
+        currentYear = '';
+      }
+    }
+
+    flush(current, out, year: currentYear);
     return out;
   }
 
@@ -1524,6 +1705,56 @@ class AIResumeParser {
     return raw.map(_coerceEducationEntry).whereType<Education>().toList();
   }
 
+  static String _educationDedupeKey(Education e) {
+    final d = e.degree.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+    final i = e.institution.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+    final y = e.year.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+    return '$d|$i|$y';
+  }
+
+  /// Re-scans full extracted PDF text and appends education rows missing from
+  /// [data.educationList] (two-column PDFs, embedded-text choice, or AI drops).
+  static void _mergeEducationFromFullText(String rawText, ResumeData data) {
+    final t = rawText.trim();
+    if (t.isEmpty) return;
+    final lines = t
+        .split(RegExp(r'\r?\n'))
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+
+    final combined = <Education>[];
+    final seenCombined = <String>{};
+
+    void takeFrom(List<Education> src) {
+      for (final rawE in src) {
+        final e = _normalizeEducationRow(rawE);
+        if (!_isPlausibleEducationRow(e)) continue;
+        final k = _educationDedupeKey(e);
+        if (seenCombined.contains(k)) continue;
+        seenCombined.add(k);
+        combined.add(e);
+      }
+    }
+
+    takeFrom(_educationLinesFromEducationSection(lines));
+    takeFrom(_educationGroupedFromLooseLines(lines));
+    if (combined.isEmpty) return;
+
+    final seen = <String>{
+      for (final e in data.educationList)
+        _educationDedupeKey(_normalizeEducationRow(e)),
+    };
+    final out = List<Education>.from(data.educationList);
+    for (final e in combined) {
+      final k = _educationDedupeKey(e);
+      if (seen.contains(k)) continue;
+      seen.add(k);
+      out.add(e);
+    }
+    data.educationList = out;
+  }
+
   static void _mergeEducationFromOpenAiJson(
     Map<String, dynamic> json,
     ResumeData data,
@@ -1535,15 +1766,35 @@ class AIResumeParser {
       'degrees',
       'academic_background',
     ];
+    final existing = <Education>[
+      for (final e in data.educationList) _normalizeEducationRow(e),
+    ];
+
     for (final k in keys) {
       final v = json[k];
       if (v is! List || v.isEmpty) continue;
-      final list =
-          _educationListFromJsonList(v).where(_isPlausibleEducationRow).toList();
-      if (list.isNotEmpty) {
-        data.educationList = list;
-        return;
+      final fromAi = _educationListFromJsonList(v)
+          .map(_normalizeEducationRow)
+          .where(_isPlausibleEducationRow)
+          .toList();
+      if (fromAi.isEmpty) continue;
+
+      final out = <Education>[];
+      final seen = <String>{};
+      for (final e in fromAi) {
+        final key = _educationDedupeKey(e);
+        if (seen.contains(key)) continue;
+        seen.add(key);
+        out.add(e);
       }
+      for (final e in existing) {
+        final key = _educationDedupeKey(e);
+        if (seen.contains(key)) continue;
+        seen.add(key);
+        out.add(e);
+      }
+      data.educationList = out;
+      return;
     }
   }
 
@@ -1650,8 +1901,6 @@ class AIResumeParser {
 
   /// When refine fails or omits jobs, infer blocks from an Experience / Work History section.
   static void _applyExperienceHeuristicFallback(String rawText, ResumeData data) {
-    if (data.experiences.isNotEmpty) return;
-
     final lines = rawText
         .split(RegExp(r'\r?\n'))
         .map((l) => l.trim())
@@ -1675,7 +1924,11 @@ class AIResumeParser {
     for (var i = start; i < lines.length; i++) {
       final low = lines[i].toLowerCase();
       if (RegExp(
-        r'^(education|academic|skills|technical skills|core competencies|projects?|certifications?|licenses|professional skills|summary|objective|profile|references|publications|languages|volunteer|interests|awards)\b',
+        // IMPORTANT: Two-column PDFs interleave left-column headings (Skills, Languages,
+        // Certifications) into the same extracted line stream while the reader is still
+        // in the Work Experience section. Do NOT treat those as section boundaries here,
+        // or we cut off responsibilities mid-job. We only stop on strong boundaries.
+        r'^(education|academic|summary|objective|profile|references|publications|volunteer|interests|awards)\b',
         caseSensitive: false,
       ).hasMatch(low)) {
         end = i;
@@ -1692,42 +1945,47 @@ class AIResumeParser {
     String cleanBullet(String l) =>
         l.replaceFirst(RegExp(r'^[•\-\*·▪►◦\u2022]\s*'), '').trim();
 
-    bool looksLikeDatesOnly(String raw) {
-      final t = raw.trim();
-      if (t.isEmpty) return false;
-      // Common: "June 2018 — Present", "04/2016 — 06/2018", "01/2024 - Present,"
-      if (RegExp(
-        r'^(?:'
-        r'(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{4}'
-        r'|\d{1,2}/\d{4}'
-        r'|\d{4}'
-        r')\s*[-–—]\s*(?:present|current|now|today|'
-        r'(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{4}'
-        r'|\d{1,2}/\d{4}'
-        r'|\d{4})\s*,?$',
+    bool looksLikeSectionHeader(String low) {
+      return RegExp(
+        // Two-column PDFs often interleave these headings; treat them as noise
+        // while parsing Work Experience.
+        r'^(education|academic|summary|objective|profile|references|publications|volunteer|interests|awards)\b',
         caseSensitive: false,
-      ).hasMatch(t)) {
-        return true;
-      }
-      // Also accept a single month-year token like "Jun 2018" in some PDFs.
-      if (RegExp(
-        r'^(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{4}\s*,?$',
-        caseSensitive: false,
-      ).hasMatch(t)) {
-        return true;
-      }
-      return false;
+      ).hasMatch(low);
     }
+
+    bool looksLikeRoleHeaderAt(int idx) {
+      final line = slice[idx].trim();
+      if (line.isEmpty) return false;
+      if (bullet(line)) return false;
+      if (line.length > 100) return false;
+      final words =
+          line.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length;
+      if (words < 2 || words > 16) return false;
+      // A role header is usually followed by a meta line with dates or a pipe split.
+      if (idx + 1 >= slice.length) return false;
+      final next = slice[idx + 1].trim();
+      if (next.isEmpty || bullet(next) || next.length > 180) return false;
+      final split = _splitCompanyAndDurationLine(next);
+      return split.$2.trim().isNotEmpty || next.contains('|');
+    }
+
+    bool shouldJoinWrapped(String prev, String next) {
+      if (prev.isEmpty || next.isEmpty) return false;
+      final last = prev.substring(prev.length - 1);
+      if ('.!?;:'.contains(last)) return false;
+      final first = next.substring(0, 1);
+      // Many PDF extractors wrap mid-sentence but start the next visual line with
+      // an uppercase letter (e.g. "Performed ..." after a wrapped clause). Join
+      // any line that continues a sentence unless it looks like a new section/job.
+      return RegExp(r'[A-Za-z(,\[]').hasMatch(first);
+    }
+
+    final inferred = <Experience>[];
 
     for (var i = 0; i < slice.length; ) {
       final line = slice[i];
       if (bullet(line)) {
-        i++;
-        continue;
-      }
-
-      // Some PDFs put a standalone date range on its own line. Never treat it as a role.
-      if (looksLikeDatesOnly(line)) {
         i++;
         continue;
       }
@@ -1744,48 +2002,115 @@ class AIResumeParser {
         continue;
       }
 
-      final role = line.trim();
+      var role = line.trim();
       i++;
       var company = '';
       var duration = '';
       final bullets = <String>[];
+      var inResponsibilitiesBlock = false;
+      var lastBullet = '';
 
-      if (i < slice.length && !bullet(slice[i])) {
-        final meta = slice[i].trim();
-        if (meta.length <= 160) {
-          // Handle "role" line already containing the employer, then a pure date line next.
-          if (looksLikeDatesOnly(meta)) {
-            duration = meta;
-            i++;
-          } else {
-            final split = _splitCompanyAndDurationLine(meta);
-            company = split.$1.trim();
-            duration = split.$2.trim();
-            if (company.isEmpty && duration.isEmpty) {
-              company = meta;
-            }
-            i++;
-            // Very common: role line, then company line, then dates line.
-            if (duration.isEmpty &&
-                i < slice.length &&
-                !bullet(slice[i]) &&
-                looksLikeDatesOnly(slice[i])) {
-              duration = slice[i].trim();
-              i++;
-            }
-          }
+      // Common PDF pattern: "Role, Company, Location" on one line, followed by a
+      // standalone duration line ("Jul 2025 - Present"). Handle that explicitly so
+      // we can merge with OpenAI output reliably.
+      if (company.isEmpty &&
+          duration.isEmpty &&
+          i < slice.length &&
+          role.contains(',') &&
+          RegExp(
+            r'^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{4}\s*[-–—]\s*(?:Present|Current|Now|Today|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{4})$',
+            caseSensitive: false,
+          ).hasMatch(slice[i].trim())) {
+        final parts = role
+            .split(',')
+            .map((s) => s.trim())
+            .where((s) => s.isNotEmpty)
+            .toList();
+        if (parts.length >= 2) {
+          // Keep the first token as role, rest as company/location.
+          final inferredRole = parts.first;
+          final inferredCompany = parts.sublist(1).join(', ');
+          duration = slice[i].trim();
+          company = inferredCompany;
+          role = inferredRole;
+          i++; // consume the duration line
         }
       }
 
-      while (i < slice.length && bullet(slice[i])) {
-        final b = cleanBullet(slice[i]);
-        if (b.isNotEmpty && b.length <= 400) bullets.add(b);
-        i++;
+      if (i < slice.length && !bullet(slice[i])) {
+        final meta = slice[i];
+        if (meta.length <= 160) {
+          final split = _splitCompanyAndDurationLine(meta);
+          company = split.$1.trim();
+          duration = split.$2.trim();
+          if (company.isEmpty && duration.isEmpty) {
+            company = meta.trim();
+          }
+          i++;
+        }
+      }
+
+      while (i < slice.length) {
+        final raw = slice[i].trim();
+        if (raw.isEmpty) {
+          i++;
+          continue;
+        }
+        final low = raw.toLowerCase();
+
+        // Hard stop on next section.
+        if (looksLikeSectionHeader(low)) break;
+
+        // Stop when we likely reached the next role line.
+        if (looksLikeRoleHeaderAt(i)) break;
+
+        if (bullet(raw)) {
+          final b = cleanBullet(raw);
+          if (b.isNotEmpty && b.length <= 900) {
+            if (lastBullet.isNotEmpty && shouldJoinWrapped(lastBullet, b)) {
+              bullets[bullets.length - 1] = '$lastBullet $b'.trim();
+              lastBullet = bullets.last;
+            } else {
+              bullets.add(b);
+              lastBullet = b;
+            }
+          }
+          i++;
+          continue;
+        }
+
+        if (RegExp(r'^(roles?\s+and\s+responsibilities|responsibilities)\s*:?',
+                caseSensitive: false)
+            .hasMatch(low)) {
+          inResponsibilitiesBlock = true;
+          i++;
+          continue;
+        }
+
+        // Most two-column PDFs lose bullet glyphs; treat wrapped lines as bullets.
+        // Do NOT drop long responsibility bullets — many resumes use long sentences.
+        if (inResponsibilitiesBlock || raw.length <= 520) {
+          final b = raw;
+          if (b.isNotEmpty) {
+            if (lastBullet.isNotEmpty && shouldJoinWrapped(lastBullet, b)) {
+              bullets[bullets.length - 1] = '$lastBullet $b'.trim();
+              lastBullet = bullets.last;
+            } else {
+              bullets.add(b);
+              lastBullet = b;
+            }
+          }
+          i++;
+          continue;
+        }
+
+        // Too long: likely paragraph noise; stop this job.
+        break;
       }
 
       if (role.length < 4) continue;
 
-      data.experiences.add(
+      inferred.add(
         Experience(
           role: role,
           company: company,
@@ -1793,11 +2118,65 @@ class AIResumeParser {
           description: bullets,
         ),
       );
-      if (data.experiences.length >= 24) break;
+      if (inferred.length >= 24) break;
+    }
+
+    if (inferred.isEmpty) return;
+    if (data.experiences.isEmpty) {
+      data.experiences = inferred;
+      return;
+    }
+
+    // Merge: keep existing jobs (from OpenAI) but append missing responsibilities.
+    // OpenAI often formats duration differently, so match primarily on role+company
+    // and fall back to exact duration match when available.
+    String norm(String s) => s.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+    String keyRoleCompany(Experience e) => '${norm(e.role)}|${norm(e.company)}';
+    String keyFull(Experience e) => '${keyRoleCompany(e)}|${norm(e.duration)}';
+
+    final byFull = <String, Experience>{};
+    final byRoleCompany = <String, Experience>{};
+    for (final e in data.experiences) {
+      byFull[keyFull(e)] = e;
+      byRoleCompany.putIfAbsent(keyRoleCompany(e), () => e);
+    }
+
+    for (final inf in inferred) {
+      final target =
+          byFull[keyFull(inf)] ?? byRoleCompany[keyRoleCompany(inf)];
+      if (target == null) continue;
+      final seen = <String>{
+        for (final b in target.description)
+          b.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ')
+      };
+      for (final b in inf.description) {
+        final norm = b.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+        if (norm.isEmpty || seen.contains(norm)) continue;
+        target.description.add(b.trim());
+        seen.add(norm);
+      }
+    }
+
+    // Heuristic blocks that did not align with any OpenAI row (renamed company,
+    // different date formatting, or missing roles) are still appended so imports
+    // do not silently drop jobs.
+    final knownRoleCompany = <String>{
+      for (final e in data.experiences) keyRoleCompany(e),
+    };
+    for (final inf in inferred) {
+      final k = keyRoleCompany(inf);
+      if (k.replaceAll('|', '').trim().isEmpty) continue;
+      if (knownRoleCompany.contains(k)) continue;
+      data.experiences.add(inf);
+      knownRoleCompany.add(k);
     }
   }
 
-  static Future<void> _refineWithOpenAI(String text, ResumeData data) async {
+  static Future<void> _refineWithOpenAI(
+    String text,
+    ResumeData data,
+    String fullResumeForHeuristics,
+  ) async {
     final apiKeyUsed = _effectiveOpenAiKey;
     if (apiKeyUsed.isEmpty) {
       // ignore: avoid_print
@@ -1831,6 +2210,8 @@ class AIResumeParser {
                       'string entries like "B.S. CS, MIT, 2018" allowed), '
                       'categories (object with string arrays ONLY for these keys: '
                       'Languages, Courses, Certifications, Achievements, Links, Hobbies, Volunteering, References, City, Country). '
+                      'For summary: copy the full professional profile/objective text from the resume when present — do not shorten. '
+                      'For each experience entry, include EVERY responsibility bullet from the resume (do not cap or summarize bullets). '
                       'Include EVERY distinct paid role / contract / internship as its own experience object '
                       '(same employer multiple times is OK if dates or titles differ). '
                       'Do not merge separate jobs into one entry. '
@@ -1857,7 +2238,7 @@ class AIResumeParser {
                 }
               ],
               'temperature': 0.1,
-              'max_tokens': 5200,
+              'max_tokens': 12000,
             }),
           )
           .timeout(_openAiTimeout);
@@ -1902,6 +2283,15 @@ class AIResumeParser {
       final sum = jsonData['summary'] as String?;
       if (sum != null && sum.trim().isNotEmpty) {
         data.summary = sum.trim();
+      }
+      final fullLines = fullResumeForHeuristics
+          .split(RegExp(r'\r?\n'))
+          .map((l) => l.trim())
+          .where((l) => l.isNotEmpty)
+          .toList();
+      final quickSum = _quickSummary(fullLines);
+      if (quickSum.trim().length > data.summary.trim().length) {
+        data.summary = quickSum.trim();
       }
 
       final sk = jsonData['skills'];
@@ -2062,7 +2452,7 @@ class AIResumeParser {
         .map(_normalizeEducationRow)
         .map((ed) {
           var deg = ed.degree.trim();
-          if (deg.length > 120) deg = '${deg.substring(0, 117)}…';
+          if (deg.length > 420) deg = '${deg.substring(0, 417)}…';
           return Education(
             degree: deg,
             institution: ed.institution.trim(),
@@ -2080,14 +2470,6 @@ class AIResumeParser {
         .toList();
 
     _stripCategoryUiNoise(data);
-
-    final ach = data.categories['Achievements'];
-    if (ach != null && ach.isNotEmpty) {
-      data.categories['Achievements'] =
-          CategoryEntryDisplay.coalesceLooseAchievementImports(
-            List<String>.from(ach),
-          );
-    }
   }
 
   static void _sanitizeStructuredCategoryLists(ResumeData data) {
@@ -2111,6 +2493,15 @@ class AIResumeParser {
       data.categories['Hobbies'] = [];
     } else {
       data.categories['Hobbies'] = hobbies;
+    }
+
+    final ach = (data.categories['Achievements'] ?? const <String>[])
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (ach.isNotEmpty) {
+      data.categories['Achievements'] =
+          CategoryEntryDisplay.normalizeImportedAchievementStorage(ach);
     }
   }
 

@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import '../l10n/app_localizations.dart';
+import '../services/pdf_service.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/uniform_app_bar.dart';
 import 'package:flutter_pdfview/flutter_pdfview.dart';
@@ -57,6 +58,26 @@ class _AtsUploadedPdfTextEditorPageState
         appBar: UniformAppBar.material(
           'Resume PDF editor',
           actions: [
+            IconButton(
+              tooltip: AppLocalizations.of(context).printOrSavePdfTooltip,
+              icon: const Icon(Icons.print_rounded, color: Colors.white),
+              onPressed: () async {
+                final t = AppLocalizations.of(context);
+                try {
+                  final r = await PdfService.presentSystemPrintForPdf(
+                    widget.pdf,
+                    name: widget.pdf.path.split(Platform.pathSeparator).last,
+                  );
+                  if (!mounted) return;
+                  if (r == null) {
+                    AppToast.error(context, t.printingUnavailable);
+                  }
+                } catch (_) {
+                  if (!mounted) return;
+                  AppToast.error(context, t.printingFailed);
+                }
+              },
+            ),
             TextButton(
               onPressed: _finish,
               child: const Text(

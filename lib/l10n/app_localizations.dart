@@ -173,27 +173,27 @@ class AppLocalizations {
       );
 
   String get templatePreviewNeedContentTitle => _t(
-        en: 'Add resume details first',
-        hi: 'पहले रिज़्यूम विवरण जोड़ें',
-        de: 'Zuerst Lebenslauf-Angaben eintragen',
-        fr: 'Ajoutez d’abord les infos du CV',
-        es: 'Añade primero los datos del CV',
-        it: 'Aggiungi prima i dati del CV',
+        en: 'Add details or upload a resume',
+        hi: 'विवरण जोड़ें या रिज़्यूम अपलोड करें',
+        de: 'Angaben eintragen oder Lebenslauf hochladen',
+        fr: 'Ajoutez des infos ou importez un CV',
+        es: 'Añade datos o sube un currículum',
+        it: 'Aggiungi dati o carica un curriculum',
       );
 
   String get templatePreviewNeedContentMessage => _t(
         en:
-            'Your resume is still empty. Tap OK to return to the editor — we’ll expand the key sections and highlight where to add details or upload a PDF.',
+            'Your resume is empty. Add your details in the editor, or upload a resume (PDF). Tap OK to go back.',
         hi:
-            'आपका रिज़्यूम अभी खाली है। संपादक पर लौटने के लिए OK दबाएँ — हम मुख्य सेक्शन खोलेंगे और हाइलाइट करेंगे जहाँ विवरण या PDF जोड़ें।',
+            'आपका रिज़्यूम खाली है। संपादक में विवरण भरें या रिज़्यूम (PDF) अपलोड करें। वापस जाने के लिए OK दबाएँ।',
         de:
-            'Dein Lebenslauf ist noch leer. Tippe auf OK, um zum Editor zurückzukehren — wir klappen die wichtigen Bereiche auf und markieren, wo du etwas eintragen oder eine PDF hochladen kannst.',
+            'Dein Lebenslauf ist leer. Trage deine Daten im Editor ein oder lade einen Lebenslauf (PDF) hoch. Tippe auf OK, um zurückzugehen.',
         fr:
-            'Votre CV est encore vide. Appuyez sur OK pour revenir à l’éditeur — nous ouvrirons les sections clés et indiquerons où ajouter des infos ou importer un PDF.',
+            'Votre CV est vide. Saisissez vos informations dans l’éditeur ou importez un CV (PDF). Appuyez sur OK pour revenir.',
         es:
-            'Tu CV sigue vacío. Pulsa OK para volver al editor: abriremos las secciones clave y resaltaremos dónde añadir datos o subir un PDF.',
+            'Tu currículum está vacío. Añade tus datos en el editor o sube un CV (PDF). Pulsa OK para volver.',
         it:
-            'Il CV è ancora vuoto. Tocca OK per tornare all’editor: apriremo le sezioni principali ed evidenzieremo dove aggiungere contenuti o caricare un PDF.',
+            'Il curriculum è vuoto. Aggiungi i tuoi dati nell’editor o carica un CV (PDF). Tocca OK per tornare indietro.',
       );
 
   String get templatePreviewNeedContentOk => _t(
@@ -479,31 +479,111 @@ class AppLocalizations {
       );
 
   String get resumePreviewDownloadActionSubtitle => _t(
-        en: 'Save a printable resume file',
-        hi: 'प्रिंट करने योग्य फ़ाइल सेव करें',
-        de: 'Druckbare Datei speichern',
-        fr: 'Enregistrer un CV imprimable',
-        es: 'Guardar CV para imprimir',
-        it: 'Salva CV stampabile',
+        en: 'Matches preview · Share or print (A4)',
+        hi: 'प्रीव्यू जैसा · शेयर या प्रिंट (A4)',
+        de: 'Wie Vorschau · Teilen oder drucken (A4)',
+        fr: 'Comme l’aperçu · Partager ou imprimer (A4)',
+        es: 'Como la vista previa · Compartir o imprimir (A4)',
+        it: 'Come anteprima · Condividi o stampa (A4)',
       );
 
-  String get resumePreviewPdfPreparing => _t(
-        en: 'Preparing PDF…',
-        hi: 'PDF तैयार हो रहा है…',
+  String get resumeExportSheetTitle => _t(
+        en: 'Export resume',
+        hi: 'रिज़्यूमे एक्सपोर्ट',
+        de: 'Lebenslauf exportieren',
+        fr: 'Exporter le CV',
+        es: 'Exportar currículum',
+        it: 'Esporta CV',
+      );
+
+  String get resumeExportSheetSubtitle => _t(
+        en: 'Choose how you want your PDF. You can always pick the other option later.',
+        hi: 'चुनें कि आपको किस तरह का PDF चाहिए। बाद में दूसरा विकल्प भी ले सकते हैं।',
+        de: 'Wähle die PDF-Art. Du kannst später jederzeit die andere Variante wählen.',
+        fr: 'Choisis le type de PDF. Tu pourras changer d’avis plus tard.',
+        es: 'Elige el tipo de PDF. Siempre puedes usar la otra opción después.',
+        it: 'Scegli il tipo di PDF. Potrai sempre usare l’altra opzione dopo.',
+      );
+
+  String get resumeExportStyledTitle => _t(
+        en: 'Styled PDF (matches preview)',
+        hi: 'स्टाइल PDF (प्रीव्यू जैसा)',
+        de: 'Gestyltes PDF (wie Vorschau)',
+        fr: 'PDF mis en forme (comme l’aperçu)',
+        es: 'PDF con diseño (como la vista previa)',
+        it: 'PDF con stile (come anteprima)',
+      );
+
+  String get resumeExportStyledDescription => _t(
+        en: 'Pixel-perfect layout for printing and portfolios. Text may not be selectable for ATS scanners.',
+        hi: 'प्रिंट और पोर्टफोलियो के लिए लेआउट। ATS स्कैनर के लिए टेक्स्ट चयन योग्य नहीं हो सकता।',
+        de: 'Pixelgenau für Druck & Portfolio. Text ist für ATS-Scanner ggf. nicht markierbar.',
+        fr: 'Mise en page fidèle pour impression et book. Le texte peut ne pas être sélectionnable pour les ATS.',
+        es: 'Diseño fiel para imprimir y portafolio. El texto puede no ser seleccionable para ATS.',
+        it: 'Layout fedele per stampa e portfolio. Il testo potrebbe non essere selezionabile per gli ATS.',
+      );
+
+  String get resumeExportAtsTitle => _t(
+        en: 'ATS-friendly PDF',
+        hi: 'ATS-अनुकूल PDF',
+        de: 'ATS-freundliches PDF',
+        fr: 'PDF compatible ATS',
+        es: 'PDF compatible con ATS',
+        it: 'PDF compatibile ATS',
+      );
+
+  String get resumeExportAtsDescription => _t(
+        en: 'Clean text-based layout — better when a job portal parses your résumé.',
+        hi: 'साफ़ टेक्स्ट लेआउट — जब पोर्टल रिज़्यूम पार्स करे तो बेहतर।',
+        de: 'Klares Textlayout — besser, wenn Portale den Lebenslauf auslesen.',
+        fr: 'Mise en page texte claire — mieux si le site extrait ton CV.',
+        es: 'Diseño basado en texto — mejor si el portal analiza tu CV.',
+        it: 'Layout testuale pulito — meglio se il portale estrae il CV.',
+      );
+
+  String get resumeExportCancel => _t(
+        en: 'Cancel',
+        hi: 'रद्द करें',
+        de: 'Abbrechen',
+        fr: 'Annuler',
+        es: 'Cancelar',
+        it: 'Annulla',
+      );
+
+  String get resumeExportPreparing => _t(
+        en: 'Preparing export…',
+        hi: 'एक्सपोर्ट तैयार हो रहा है…',
+        de: 'Export wird vorbereitet…',
+        fr: 'Préparation de l’export…',
+        es: 'Preparando exportación…',
+        it: 'Preparazione esportazione…',
+      );
+
+  String resumeExportRenderingPage(int current, int total) => _t(
+        en: 'Rendering page $current of $total…',
+        hi: 'पेज $current / $total रेंडर हो रहा है…',
+        de: 'Seite $current von $total wird gerendert…',
+        fr: 'Rendu de la page $current sur $total…',
+        es: 'Generando página $current de $total…',
+        it: 'Rendering pagina $current di $total…',
+      );
+
+  String get resumeExportBuildingPdf => _t(
+        en: 'Building PDF…',
+        hi: 'PDF बन रहा है…',
         de: 'PDF wird erstellt…',
-        fr: 'Préparation du PDF…',
-        es: 'Preparando PDF…',
-        it: 'Preparazione PDF…',
+        fr: 'Création du PDF…',
+        es: 'Creando PDF…',
+        it: 'Creazione PDF…',
       );
 
-  /// One-line hint under preview PDF actions (narrow layout).
-  String get resumePreviewPdfDockHint => _t(
-        en: 'Tip: the share sheet opens next — choose Save to Files, Downloads, or Drive.',
-        hi: 'टिप: अगले शेयर शीट में Files, Downloads या Drive चुनें।',
-        de: 'Tipp: Im Teilen-Dialog „In Dateien sichern“, Downloads oder Drive wählen.',
-        fr: 'Astuce : dans Partager, choisissez Fichiers, Téléchargements ou Drive.',
-        es: 'Consejo: en compartir, elige Archivos, Descargas o Drive.',
-        it: 'Suggerimento: in Condividi scegli File, Download o Drive.',
+  String get resumeExportOpeningShare => _t(
+        en: 'Opening share sheet…',
+        hi: 'शेयर शीट खुल रही है…',
+        de: 'Teilen-Dialog wird geöffnet…',
+        fr: 'Ouverture du menu Partager…',
+        es: 'Abriendo menú para compartir…',
+        it: 'Apertura menu Condividi…',
       );
 
   /// After PDF export opens the system share sheet (Save to Files / Downloads).
@@ -520,6 +600,51 @@ class AppLocalizations {
             'Tu PDF está listo. En la hoja de compartir, elige Guardar en Archivos, Descargas u otra carpeta en el dispositivo.',
         it:
             'Il PDF è pronto. Nel foglio Condividi scegli Salva in File, Download o un’altra cartella sul dispositivo.',
+      );
+
+  String get resumeExportReadyTitle => _t(
+        en: 'PDF ready',
+        hi: 'PDF तैयार',
+        de: 'PDF fertig',
+        fr: 'PDF prêt',
+        es: 'PDF listo',
+        it: 'PDF pronto',
+      );
+
+  String get resumeExportShareToApps => _t(
+        en: 'Share to apps',
+        hi: 'ऐप्स पर शेयर करें',
+        de: 'Mit Apps teilen',
+        fr: 'Partager vers des apps',
+        es: 'Compartir con apps',
+        it: 'Condividi con le app',
+      );
+
+  String get resumeExportShareToAppsDescription => _t(
+        en: 'Email, Google Drive, WhatsApp, Save to Files, and more',
+        hi: 'ईमेल, Google Drive, WhatsApp, Files में सेव, और भी',
+        de: 'E-Mail, Google Drive, WhatsApp, in Dateien sichern und mehr',
+        fr: 'E-mail, Google Drive, WhatsApp, Enregistrer dans Fichiers, etc.',
+        es: 'Correo, Google Drive, WhatsApp, Guardar en Archivos y más',
+        it: 'Email, Google Drive, WhatsApp, Salva in File e altro',
+      );
+
+  String get resumeExportPrintOrSavePdf => _t(
+        en: 'Print or save as PDF',
+        hi: 'प्रिंट या PDF के रूप में सेव',
+        de: 'Drucken oder als PDF speichern',
+        fr: 'Imprimer ou enregistrer en PDF',
+        es: 'Imprimir o guardar como PDF',
+        it: 'Stampa o salva come PDF',
+      );
+
+  String get resumeExportPrintComplete => _t(
+        en: 'Print or PDF export finished.',
+        hi: 'प्रिंट या PDF निर्यात पूरा।',
+        de: 'Drucken oder PDF-Export abgeschlossen.',
+        fr: 'Impression ou export PDF terminé.',
+        es: 'Impresión o exportación PDF finalizada.',
+        it: 'Stampa o esportazione PDF completata.',
       );
 
   /// Shown after a resume/cover PDF download or share-to-save completes.
@@ -548,6 +673,33 @@ class AppLocalizations {
         fr: 'Le partage a échoué. Réessayez.',
         es: 'No se pudo compartir. Inténtalo de nuevo.',
         it: 'Condivisione non riuscita. Riprova.',
+      );
+
+  String get printOrSavePdfTooltip => _t(
+        en: 'Print or Save as PDF — paper size defaults to A4',
+        hi: 'प्रिंट या PDF के रूप में सेव करें — पेपर साइज़ डिफ़ॉल्ट A4',
+        de: 'Drucken oder als PDF speichern — Papierformat standardmäßig A4',
+        fr: 'Imprimer ou Enregistrer en PDF — format A4 par défaut',
+        es: 'Imprimir o Guardar como PDF — tamaño de papel A4 por defecto',
+        it: 'Stampa o Salva come PDF — formato carta predefinito A4',
+      );
+
+  String get printingUnavailable => _t(
+        en: 'Printing is not available on this device.',
+        hi: 'इस डिवाइस पर प्रिंटिंग उपलब्ध नहीं है।',
+        de: 'Drucken ist auf diesem Gerät nicht verfügbar.',
+        fr: 'L’impression n’est pas disponible sur cet appareil.',
+        es: 'La impresión no está disponible en este dispositivo.',
+        it: 'La stampa non è disponibile su questo dispositivo.',
+      );
+
+  String get printingFailed => _t(
+        en: 'Could not open printing. Please try again.',
+        hi: 'प्रिंटिंग नहीं खुल सकी। कृपया फिर कोशिश करें।',
+        de: 'Druckdialog konnte nicht geöffnet werden. Bitte erneut versuchen.',
+        fr: 'Impossible d’ouvrir l’impression. Réessayez.',
+        es: 'No se pudo abrir la impresión. Inténtalo de nuevo.',
+        it: 'Impossibile aprire la stampa. Riprova.',
       );
 
   String get jobDescriptionRequiredTailor => _t(

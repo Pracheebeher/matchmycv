@@ -946,8 +946,8 @@ Widget modernDialog({
 
                         TextField(
                           controller: summary,
-                          maxLines: 6,
-                          minLines: 3,
+                          maxLines: null,
+                          minLines: 4,
                           keyboardType: TextInputType.multiline,
                           textInputAction: TextInputAction.newline,
                           style: const TextStyle(color: Colors.white),
@@ -1046,8 +1046,8 @@ Widget modernDialog({
                                                       .where((x) =>
                                                           x.trim().isNotEmpty)
                                                       .join('\n'),
-                                                  maxLines: 16,
-                                                  overflow: TextOverflow.ellipsis,
+                                                  maxLines: null,
+                                                  overflow: TextOverflow.visible,
                                                   style: TextStyle(
                                                     color: Colors.white
                                                         .withOpacity(0.72),
@@ -1791,17 +1791,33 @@ IconData getCategoryIcon(String key) {
   Widget field(
     TextEditingController controller,
     String hint, {
-    int maxLines = 1,
+    int? maxLines = 1,
     TextInputType? keyboardType,
   }) {
     final loc = AppLocalizations.of(context);
-    final multiline = maxLines > 1;
+    final unlimited = maxLines == null;
+    final int? cappedMax = unlimited ? null : maxLines;
+    final multiline =
+        unlimited || (cappedMax != null && cappedMax > 1);
+    final int? textFieldMaxLines;
+    final int? textFieldMinLines;
+    if (!multiline) {
+      textFieldMaxLines = 1;
+      textFieldMinLines = null;
+    } else if (unlimited) {
+      textFieldMaxLines = null;
+      textFieldMinLines = 4;
+    } else {
+      final n = cappedMax!;
+      textFieldMaxLines = n;
+      textFieldMinLines = math.min(n, 3);
+    }
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: TextField(
         controller: controller,
-        maxLines: multiline ? maxLines : 1,
-        minLines: multiline ? math.min(maxLines, 3) : null,
+        maxLines: textFieldMaxLines,
+        minLines: textFieldMinLines,
         keyboardType:
             keyboardType ?? (multiline ? TextInputType.multiline : TextInputType.text),
         textInputAction:
@@ -2834,7 +2850,7 @@ void _showExperienceDialog({int? editIndex}) {
         field(
           bullets,
           AppLocalizations.of(context).bulletPointsHint,
-          maxLines: 6,
+          maxLines: null,
         ),
       ],
       onSave: () {
@@ -2931,7 +2947,7 @@ void _showAddProjectDialog() {
       fields: [
         field(titleC, 'Project name'),
         field(durationC, 'Duration (e.g. Jan 2023 - May 2023)'),
-        field(detailsC, 'Details', maxLines: 4),
+        field(detailsC, 'Details', maxLines: null),
       ],
       onSave: () {
         final name = titleC.text.trim();

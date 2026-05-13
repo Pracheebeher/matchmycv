@@ -42,8 +42,14 @@ class ResumeLayoutEngine {
     return _layoutDefault(data);
   }
 
-  /// Navy sidebar holds education; main column: profile, timeline experience, references.
+  /// Navy sidebar holds education; main column: summary, experience, certifications.
   static List<Map<String, dynamic>> _layoutTemplate2(ResumeData data) {
+    final certifications = (data.categories["Certifications"] ?? const <String>[])
+        .map((s) => CategoryEntryDisplay.primarySecondaryLine(s))
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+
     return [
       {
         "type": "header",
@@ -60,6 +66,11 @@ class ResumeLayoutEngine {
         "type": "experience",
         "items": data.experiences,
       },
+      if (certifications.isNotEmpty)
+        {
+          "type": "certifications",
+          "items": certifications,
+        },
     ];
   }
 

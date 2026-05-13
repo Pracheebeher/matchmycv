@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/rendering.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/resume_model.dart';
 import '../services/resume_layout_engine.dart';
@@ -17,7 +18,7 @@ import 'home_builder_page.dart';
 import '../services/ai_job_tailoring_service.dart';
 import '../services/pdf_service.dart';
 import '../widgets/app_toast.dart';
-import '../widgets/resume_preview_bottom_actions.dart';
+import '../widgets/resume_pdf_post_export_sheet.dart';
 
 /// Matches [TemplateSelectionPage] template id `"2"` (`thumb` field).
 const String _template2SelectionThumbAsset = 'assets/templates/template2.png';
@@ -88,8 +89,11 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
 
   String _bodyFontFamily = 'Roboto';
   String _nameFontFamily = 'Georgia';
-  bool _downloadingPdf = false;
+  /// True while a resume PDF export is running (guards double-tap). Does not
+  /// drive the download tile spinner — progress is shown only in the export sheet.
+  bool _resumePdfExportInProgress = false;
   bool _tailoringAi = false;
+  final GlobalKey _downloadExportTileKey = GlobalKey();
   List<GlobalKey> _exportPageBoundaryKeys = const [];
   final ScrollController _previewScrollController = ScrollController();
 
@@ -130,8 +134,8 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
               width: double.maxFinite,
               child: TextField(
                 controller: c,
-                maxLines: 8,
-                minLines: 3,
+                maxLines: null,
+                minLines: 5,
                 autofocus: true,
                 keyboardType: TextInputType.multiline,
                 textInputAction: TextInputAction.newline,
@@ -603,40 +607,206 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
     );
   }
 
-  Future<void> _downloadResumePdf() async {
-    setState(() => _downloadingPdf = true);
+  Rect? _shareOriginForExport() {
+    final box =
+        _downloadExportTileKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box != null && box.hasSize) {
+      final o = box.localToGlobal(Offset.zero);
+      return Rect.fromLTWH(o.dx, o.dy, box.size.width, box.size.height);
+    }
+    final sz = MediaQuery.sizeOf(context);
+    final pad = MediaQuery.paddingOf(context);
+    return Rect.fromLTWH(12, sz.height - pad.bottom - 4, sz.width - 24, 1);
+  }
+
+  /// Download uses the styled (WYSIWYG) PDF that matches the preview, then the
+  /// “PDF ready” sheet (share vs print). For ATS text PDF use the editor Download.
+  Future<void> _startResumeDownloadExport() async {
+    if (_resumePdfExportInProgress) return;
+    HapticFeedback.selectionClick();
+    await _runResumeExport(_ResumeExportKind.styledPreview);
+  }
+
+  Future<void> _runResumeExport(_ResumeExportKind kind) async {
+    if (!mounted || _resumePdfExportInProgress) return;
+    _resumePdfExportInProgress = true;
+    final t = AppLocalizations.of(context)!;
+    final nav = Navigator.of(context, rootNavigator: true);
+    final status = ValueNotifier<String>(t.resumeExportPreparing);
+    final accent = kind == _ResumeExportKind.styledPreview
+        ? _previewActionCyan
+        : const Color(0xFF22C55E);
+    showDialog<void>(
+      context: context,
+      useRootNavigator: true,
+      barrierDismissible: false,
+      barrierColor: Colors.black.withOpacity(0.42),
+      builder: (dialogCtx) {
+        final bottomPad =
+            MediaQuery.paddingOf(dialogCtx).bottom + 102;
+        return ValueListenableBuilder<String>(
+          valueListenable: status,
+          builder: (context, msg, _) {
+            return PopScope(
+              canPop: false,
+              child: Align(
+                alignment: Alignment.bottomCenter,
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(18, 0, 18, bottomPad),
+                  child: Material(
+                    color: const Color(0xFF0B1220),
+                    elevation: 24,
+                    shadowColor: Colors.black.withOpacity(0.45),
+                    borderRadius: BorderRadius.circular(20),
+                    child: Container(
+                      width: math.min(400, MediaQuery.sizeOf(dialogCtx).width - 36),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: Colors.white.withOpacity(0.14)),
+                        boxShadow: [
+                          BoxShadow(
+                            color: accent.withOpacity(0.18),
+                            blurRadius: 28,
+                            offset: const Offset(0, 10),
+                          ),
+                        ],
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(20),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            LinearProgressIndicator(
+                              minHeight: 3,
+                              backgroundColor: Colors.white.withOpacity(0.08),
+                              color: accent,
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.picture_as_pdf_rounded,
+                                    color: accent,
+                                    size: 26,
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Text(
+                                      msg,
+                                      textAlign: TextAlign.left,
+                                      style: TextStyle(
+                                        color: Colors.white.withOpacity(0.94),
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 14,
+                                        height: 1.35,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+    await WidgetsBinding.instance.endOfFrame;
+
+    ResumePdfExport? built;
     try {
-      final box = context.findRenderObject() as RenderBox?;
-      Rect? shareOrigin;
-      if (box != null && box.hasSize) {
-        final o = box.localToGlobal(Offset.zero);
-        shareOrigin = Rect.fromLTWH(o.dx, o.dy, box.size.width, box.size.height);
+      switch (kind) {
+        case _ResumeExportKind.styledPreview:
+          final pagePngs = await _renderVisiblePreviewPagesToPngs(
+            onProgress: (done, total) {
+              status.value = t.resumeExportRenderingPage(done, total);
+            },
+          );
+          status.value = t.resumeExportBuildingPdf;
+          built = await PdfService.exportTemplatePreviewPdfToTemp(
+            pagePngBytes: pagePngs,
+            data: widget.data,
+          );
+          break;
+        case _ResumeExportKind.atsText:
+          status.value = t.resumeExportBuildingPdf;
+          built = await PdfService.exportResumePdfToTemp(data: widget.data);
+          break;
       }
-      // Styled export: preserves the exact on-screen template, but is image-based
-      // (ATS checkers cannot extract text from it).
-      final pagePngs = await _renderVisiblePreviewPagesToPngs();
-      await PdfService.shareTemplatePreviewPdf(
-        pagePngBytes: pagePngs,
-        data: widget.data,
-        sharePositionOrigin: shareOrigin,
-      );
-      if (!mounted) return;
-      AppToast.success(
-        context,
-        AppLocalizations.of(context).successfullyDownloaded,
-      );
     } catch (e) {
       if (!mounted) return;
+      HapticFeedback.heavyImpact();
+      final detail = e is StateError ? e.message : null;
       AppToast.error(
         context,
-        AppLocalizations.of(context).downloadCouldNotComplete,
+        detail != null && detail.isNotEmpty
+            ? '${t.downloadCouldNotComplete} $detail'
+            : t.downloadCouldNotComplete,
       );
     } finally {
-      if (mounted) setState(() => _downloadingPdf = false);
+      status.dispose();
+      _resumePdfExportInProgress = false;
+      if (mounted) {
+        nav.pop();
+      }
+    }
+
+    if (built == null || !mounted) return;
+
+    final origin = _shareOriginForExport();
+    final choice = await showResumePdfPostExportSheet(
+      context,
+      strings: t,
+    );
+    if (!mounted) return;
+
+    switch (choice) {
+      case ResumePdfPostExportChoice.share:
+        await Share.shareXFiles(
+          [
+            XFile(
+              built.file.path,
+              mimeType: 'application/pdf',
+              name: built.displayName,
+            ),
+          ],
+          subject: 'Resume',
+          sharePositionOrigin: origin,
+        );
+        if (!mounted) return;
+        HapticFeedback.mediumImpact();
+        AppToast.success(context, t.resumePdfExportShareHint);
+        break;
+      case ResumePdfPostExportChoice.print:
+        final pr = await PdfService.presentSystemPrintForPdf(
+          built.file,
+          name: built.displayName,
+        );
+        if (!mounted) return;
+        if (pr == null) {
+          AppToast.error(context, t.printingUnavailable);
+        } else if (pr) {
+          HapticFeedback.mediumImpact();
+          AppToast.success(context, t.resumeExportPrintComplete);
+        }
+        break;
+      case null:
+        break;
     }
   }
 
-  Future<List<Uint8List>> _renderVisiblePreviewPagesToPngs() async {
+  Future<List<Uint8List>> _renderVisiblePreviewPagesToPngs({
+    void Function(int done, int total)? onProgress,
+  }) async {
     // Wait until the preview has published stable repaint keys for all pages.
     for (var attempt = 0; attempt < 30; attempt++) {
       await WidgetsBinding.instance.endOfFrame;
@@ -681,6 +851,7 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
         throw StateError('Failed to encode PNG.');
       }
       pngs.add(byteData.buffer.asUint8List());
+      onProgress?.call(pngs.length, keys.length);
     }
     if (restoreOffset != null && _previewScrollController.hasClients) {
       try {
@@ -690,6 +861,156 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
       }
     }
     return pngs;
+  }
+
+  static const Color _previewActionViolet = Color(0xFF7C3AED);
+  static const Color _previewActionCyan = Color(0xFF06B6D4);
+
+  Widget _previewActionTile({
+    Key? tileKey,
+    required Color accent,
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required bool busy,
+    required VoidCallback onTap,
+  }) {
+    return KeyedSubtree(
+      key: tileKey,
+      child: ClipRRect(
+      borderRadius: BorderRadius.circular(18),
+      child: BackdropFilter(
+        filter: ui.ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+        child: Material(
+          color: Colors.white.withOpacity(0.06),
+          child: InkWell(
+            onTap: busy ? null : onTap,
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: Colors.white.withOpacity(0.14)),
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    accent.withOpacity(0.28),
+                    Colors.white.withOpacity(0.05),
+                  ],
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: accent.withOpacity(0.18),
+                    blurRadius: 20,
+                    offset: const Offset(0, 12),
+                  ),
+                ],
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  if (busy)
+                    SizedBox(
+                      width: 30,
+                      height: 30,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.6,
+                        color: accent,
+                      ),
+                    )
+                  else
+                    Container(
+                      width: 32,
+                      height: 32,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            Colors.white.withOpacity(0.14),
+                            Colors.white.withOpacity(0.06),
+                          ],
+                        ),
+                        border: Border.all(color: Colors.white.withOpacity(0.16)),
+                      ),
+                      child: Icon(icon, color: accent, size: 18),
+                    ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w900,
+                            fontSize: 13.0,
+                            height: 1.1,
+                            letterSpacing: 0.1,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          subtitle,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.72),
+                            fontWeight: FontWeight.w600,
+                            fontSize: 11.0,
+                            height: 1.2,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+    );
+  }
+
+  Widget _jobTailorAndDownloadStrip(BuildContext context) {
+    final t = AppLocalizations.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: _previewActionTile(
+              accent: _previewActionViolet,
+              icon: Icons.auto_awesome_rounded,
+              title: t.resumePreviewTailorActionTitle,
+              subtitle: t.resumePreviewTailorActionSubtitle,
+              busy: _tailoringAi,
+              onTap: _openResumeJobTailoring,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: _previewActionTile(
+              tileKey: _downloadExportTileKey,
+              accent: _previewActionCyan,
+              icon: Icons.download_rounded,
+              title: t.resumePreviewDownloadActionTitle,
+              subtitle: t.resumePreviewDownloadActionSubtitle,
+              busy: false,
+              onTap: _startResumeDownloadExport,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -832,17 +1153,10 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
                   },
                 ),
               ),
-              ResumePreviewBottomActions(
-                tailorTitle: t.resumePreviewTailorActionTitle,
-                tailorSubtitle: t.resumePreviewTailorActionSubtitle,
-                pdfTitle: t.resumePreviewDownloadActionTitle,
-                pdfSubtitle: t.resumePreviewDownloadActionSubtitle,
-                pdfBusyLabel: t.resumePreviewPdfPreparing,
-                pdfDockHint: t.resumePreviewPdfDockHint,
-                tailoringBusy: _tailoringAi,
-                pdfBusy: _downloadingPdf,
-                onTailor: _openResumeJobTailoring,
-                onSavePdf: _downloadResumePdf,
+              SafeArea(
+                top: false,
+                minimum: EdgeInsets.zero,
+                child: _jobTailorAndDownloadStrip(context),
               ),
             ],
           ),
@@ -917,7 +1231,10 @@ class _ResumePreviewBody extends StatelessWidget {
           final sidebarWidth = isSingleColumn
               ? 0.0
               : (paperWidth / 3).clamp(minSidebar, maxSidebar);
-          final pageHeight = _PreviewMetrics.pageHeightFor(paperWidth);
+          // Match ISO A4 exactly so PNG export matches [PdfService.styledTemplateExportPageFormat].
+          final pageHeight =
+              paperWidth * PdfService.styledTemplateExportPageFormat.height /
+                  PdfService.styledTemplateExportPageFormat.width;
           const pageFooterBar = 28.0;
           final rightWidth = isSingleColumn
               ? math.max(120.0, paperWidth - 26 * 2)
@@ -998,7 +1315,21 @@ class _ResumePreviewBody extends StatelessWidget {
                                 width: availableWidth,
                                 child: Builder(
                                   builder: (_) {
-                                    final pageContents = templateId == "1"
+                                    final fitted = FittedBox(
+                                      fit: BoxFit.fitWidth,
+                                      alignment: Alignment.topCenter,
+                                      child: SizedBox(
+                                        width: paperWidth,
+                                        height: pageHeight,
+                                        child: Material(
+                                          elevation: 2,
+                                          color: Colors.white,
+                                          borderRadius: BorderRadius.circular(6),
+                                          child: ClipRRect(
+                                            borderRadius:
+                                                BorderRadius.circular(6),
+                                            clipBehavior: Clip.antiAlias,
+                                            child: templateId == "1"
                                                 ? Column(
                                                   mainAxisSize:
                                                       MainAxisSize.max,
@@ -1029,30 +1360,23 @@ class _ResumePreviewBody extends StatelessWidget {
                                                               Clip.hardEdge,
                                                           child: LayoutBuilder(
                                                             builder: (ctx, c) {
-                                                              // Lock scroll cross-axis to the content column width so the
-                                                              // Column cannot shrink to intrinsic width (empty white on
-                                                              // the right in preview + exported PDF).
-                                                              return ConstrainedBox(
-                                                                constraints:
-                                                                    BoxConstraints.tightFor(
+                                                              // Tight horizontal width: `minWidth`-only ConstrainedBox lets the
+                                                              // scroll child Column shrink to intrinsic width, so content sits
+                                                              // on the left with empty white on the right (preview + PDF PNG).
+                                                              return SingleChildScrollView(
+                                                                physics:
+                                                                    const ClampingScrollPhysics(),
+                                                                child: SizedBox(
                                                                   width: c.maxWidth,
-                                                                ),
-                                                                child:
-                                                                    SingleChildScrollView(
-                                                                  physics:
-                                                                      const ClampingScrollPhysics(),
-                                                                  child: SizedBox(
-                                                                    width: c.maxWidth,
-                                                                    child: Column(
-                                                                      mainAxisSize:
-                                                                          MainAxisSize.min,
-                                                                      crossAxisAlignment:
-                                                                          CrossAxisAlignment
-                                                                              .stretch,
-                                                                      children:
-                                                                          mainColumnChildren(
-                                                                              i),
-                                                                    ),
+                                                                  child: Column(
+                                                                    mainAxisSize:
+                                                                        MainAxisSize.min,
+                                                                    crossAxisAlignment:
+                                                                        CrossAxisAlignment
+                                                                            .stretch,
+                                                                    children:
+                                                                        mainColumnChildren(
+                                                                            i),
                                                                   ),
                                                                 ),
                                                               );
@@ -1124,9 +1448,13 @@ class _ResumePreviewBody extends StatelessWidget {
                                                             child:
                                                                 LayoutBuilder(
                                                               builder: (ctx2, c2) {
+                                                                // Template 2: fixed “paper” height — inner scroll fights the outer
+                                                                // preview scroll and feels broken; pagination should bound content.
                                                                 return SingleChildScrollView(
-                                                                  physics:
-                                                                      const ClampingScrollPhysics(),
+                                                                  physics: templateId ==
+                                                                          "2"
+                                                                      ? const NeverScrollableScrollPhysics()
+                                                                      : const ClampingScrollPhysics(),
                                                                   padding:
                                                                       EdgeInsets.zero,
                                                                   child: SizedBox(
@@ -1191,43 +1519,16 @@ class _ResumePreviewBody extends StatelessWidget {
                                                       ),
                                                     ),
                                                   ],
-                                                );
-                                    final pageForExport = SizedBox(
-                                      width: paperWidth,
-                                      height: pageHeight,
-                                      child: ColoredBox(
-                                        color: Colors.white,
-                                        child: ClipRect(
-                                          clipBehavior: Clip.hardEdge,
-                                          child: pageContents,
+                                                ),
+                                          ),
                                         ),
                                       ),
                                     );
-                                    final pageForPreview = SizedBox(
-                                      width: paperWidth,
-                                      height: pageHeight,
-                                      child: Material(
-                                        elevation: 2,
-                                        color: Colors.white,
-                                        borderRadius: BorderRadius.circular(6),
-                                        child: ClipRRect(
-                                          borderRadius: BorderRadius.circular(6),
-                                          clipBehavior: Clip.antiAlias,
-                                          child: pageContents,
-                                        ),
-                                      ),
+                                    if (keys == null) return fitted;
+                                    return RepaintBoundary(
+                                      key: keys[i],
+                                      child: fitted,
                                     );
-                                    final fitted = FittedBox(
-                                      fit: BoxFit.fitWidth,
-                                      alignment: Alignment.topCenter,
-                                      child: keys == null
-                                          ? pageForPreview
-                                          : RepaintBoundary(
-                                              key: keys[i],
-                                              child: pageForExport,
-                                            ),
-                                    );
-                                    return fitted;
                                   },
                                 ),
                               ),
@@ -1435,6 +1736,157 @@ class _ResumePreviewBody extends StatelessWidget {
     return out;
   }
 
+  /// Further splits template-2 experience so each chunk fits [maxChunkHeight], moving
+  /// overflow to later pages instead of relying on a scrollable right column.
+  List<Map<String, dynamic>> _expandTemplate2ExperienceBulletSlices(
+    List<Map<String, dynamic>> right,
+    double maxChunkHeight,
+  ) {
+    double chunkHeight({
+      required bool workHeading,
+      required bool jobHeading,
+      required bool hasIntro,
+      required int bulletCount,
+    }) {
+      var h = 0.0;
+      if (workHeading) h += 52;
+      if (jobHeading) {
+        h += 56;
+        if (hasIntro) h += 46;
+      } else {
+        h += 10;
+      }
+      if (bulletCount > 0) {
+        h += 10;
+        h += bulletCount * 23.0;
+      } else if (hasIntro) {
+        h += 10;
+      }
+      h += 20;
+      return h;
+    }
+
+    final out = <Map<String, dynamic>>[];
+    for (final s in right) {
+      if (s["type"] != "experience") {
+        out.add(s);
+        continue;
+      }
+      final jd = (s["target_jd"] ?? "").toString().trim();
+      final base = Map<String, dynamic>.from(s)
+        ..remove("target_jd")
+        ..remove("items");
+      final items = (s["items"] as List?) ?? const [];
+      if (items.isEmpty) {
+        out.add(s);
+        continue;
+      }
+
+      var jdAttached = false;
+      var firstInSourceSection = true;
+
+      for (final raw in items) {
+        if (raw is! Experience) continue;
+        final exp = raw;
+        final bullets = exp.description
+            .map((b) => b.trim())
+            .where((b) => b.isNotEmpty)
+            .toList();
+
+        String? intro;
+        var bulletLines = <String>[];
+        if (bullets.isNotEmpty) {
+          if (bullets.length >= 2 &&
+              (bullets.first.length > 140 ||
+                  bullets.first.contains('.'))) {
+            intro = bullets.first;
+            bulletLines = bullets.skip(1).toList();
+          } else {
+            bulletLines = bullets;
+          }
+        } else {
+          final m = <String, dynamic>{
+            ...base,
+            "type": "experience",
+            "items": <Experience>[exp],
+            "t1_show_work_heading": firstInSourceSection,
+            "t1_show_job_header": true,
+          };
+          if (!jdAttached && jd.isNotEmpty) {
+            m["target_jd"] = jd;
+            jdAttached = true;
+          }
+          out.add(m);
+          firstInSourceSection = false;
+          continue;
+        }
+
+        var introDone = intro == null;
+        var bi = 0;
+        var firstForJob = true;
+        var guard = 0;
+
+        while ((!introDone || bi < bulletLines.length) && guard < 400) {
+          guard++;
+          final workHead = firstInSourceSection;
+          final jobHead = firstForJob;
+          final useIntro = jobHead && intro != null && !introDone;
+
+          var take = 0;
+          final maxTake = bulletLines.length - bi;
+          for (var k = 0; k <= maxTake; k++) {
+            if (chunkHeight(
+                  workHeading: workHead,
+                  jobHeading: jobHead,
+                  hasIntro: useIntro,
+                  bulletCount: k,
+                ) <=
+                maxChunkHeight) {
+              take = k;
+            } else {
+              break;
+            }
+          }
+          if (take == 0 && bi < bulletLines.length) {
+            take = 1;
+          }
+
+          final desc = <String>[];
+          if (useIntro) {
+            desc.add(intro!);
+            introDone = true;
+          }
+          desc.addAll(bulletLines.sublist(bi, bi + take));
+          bi += take;
+
+          final sub = Experience(
+            role: exp.role,
+            company: exp.company,
+            duration: exp.duration,
+            description: desc,
+          );
+          final m = <String, dynamic>{
+            ...base,
+            "type": "experience",
+            "items": <Experience>[sub],
+            "t1_show_work_heading": workHead,
+            "t1_show_job_header": jobHead,
+          };
+          if (!jdAttached && jd.isNotEmpty) {
+            m["target_jd"] = jd;
+            jdAttached = true;
+          }
+          out.add(m);
+
+          firstInSourceSection = false;
+          firstForJob = false;
+        }
+      }
+    }
+
+    return out;
+  }
+
   List<_ResumePreviewPageData> _paginate(
     List<Map<String, dynamic>> layout, {
     required double pageHeight,
@@ -1472,10 +1924,6 @@ class _ResumePreviewBody extends StatelessWidget {
             e.institution.trim().isNotEmpty ||
             e.year.trim().isNotEmpty)
         .toList();
-    final certifications = (data.categories["Certifications"] ?? const <String>[])
-        .map((s) => s.trim())
-        .where((s) => s.isNotEmpty)
-        .toList();
     final sidebarCategoryExclude = <String>{
       "Languages",
       "Links",
@@ -1512,7 +1960,6 @@ class _ResumePreviewBody extends StatelessWidget {
     // SKILLS/EDUCATION/LANGUAGES/OTHER continue across pages.
     int skillIndex = 0;
     int educationIndex = 0;
-    int certificationIndex = 0;
     int languageIndex = 0;
     int otherIndex = 0;
     int rightIndex = 0;
@@ -1560,6 +2007,10 @@ class _ResumePreviewBody extends StatelessWidget {
         maxChunk,
         templateId: templateId,
       );
+      if (templateId == "2") {
+        final sliceH = math.max(160.0, rightInnerHeight - 48.0);
+        right = _expandTemplate2ExperienceBulletSlices(right, sliceH);
+      }
     }
 
     // Template 1 is full-width: skills/education/languages live in [right], not the
@@ -1570,9 +2021,6 @@ class _ResumePreviewBody extends StatelessWidget {
 
     while ((packSidebar && skillIndex < skills.length) ||
         (packSidebar && educationIndex < education.length) ||
-        (packSidebar &&
-            templateId == "2" &&
-            certificationIndex < certifications.length) ||
         (packSidebar && languageIndex < languages.length) ||
         (packSidebar && otherIndex < otherLines.length) ||
         rightIndex < right.length ||
@@ -1587,7 +2035,6 @@ class _ResumePreviewBody extends StatelessWidget {
       final sectionHeader = templateId == "2" ? 22.0 : 20.0;
       final skillItem = templateId == "2" ? 18.0 : 22.0;
       final educationItem = templateId == "2" ? 62.0 : 48.0;
-      final certificationItem = templateId == "2" ? 22.0 : 24.0;
       final otherItem = 24.0;
       final safety = templateId == "2" ? 12.0 : 18.0;
 
@@ -1599,11 +2046,9 @@ class _ResumePreviewBody extends StatelessWidget {
         remaining -= 16; // spacer
       }
 
-      if (packSidebar && templateId == "2") {
-        if (pages.isEmpty) {
-          // First-page sidebar: selection-style thumbnail above contact rows.
-          remaining -= 78.0;
-        }
+      if (packSidebar && templateId == "2" && pages.isEmpty) {
+        // First-page sidebar only: photo + contact rows (not repeated on page 2+).
+        remaining -= 78.0;
         var contactRows = 0;
         if (data.email.trim().isNotEmpty) contactRows++;
         if (data.phone.trim().isNotEmpty) contactRows++;
@@ -1631,11 +2076,14 @@ class _ResumePreviewBody extends StatelessWidget {
 
       int takeSkills = 0;
       int takeEducation = 0;
-      int takeCerts = 0;
       int takeLangs = 0;
       int takeOther = 0;
 
-      // Order: Skills, Education, Languages, Other (as requested).
+      // Order: Skills, Education, Languages, Other (certifications are in the main column for template 2).
+      // Template 2 page 1: fill vertically with as many skills as fit first; only add
+      // education on page 1 once every skill fits on this page. If skills spill to
+      // page 2+, education waits until those remaining skills are placed (then it
+      // appears on the next page with leftover space, typically page 2).
       if (packSidebar &&
           skills.length > skillIndex &&
           remaining > sectionHeader + 8 + skillItem) {
@@ -1651,26 +2099,23 @@ class _ResumePreviewBody extends StatelessWidget {
       if (packSidebar &&
           education.length > educationIndex &&
           remaining > sectionHeader + educationItem) {
-        remaining -= sectionHeader + 8;
-        takeEducation = math.min(
-          education.length - educationIndex,
-          math.max(0, (remaining / educationItem).floor()),
-        );
-        remaining -= takeEducation * educationItem;
-        remaining -= 8;
-      }
-
-      if (packSidebar &&
-          templateId == "2" &&
-          certifications.length > certificationIndex &&
-          remaining > sectionHeader + certificationItem) {
-        remaining -= sectionHeader + 10; // framed EDUCATION header is taller
-        takeCerts = math.min(
-          certifications.length - certificationIndex,
-          math.max(0, (remaining / certificationItem).floor()),
-        );
-        remaining -= takeCerts * certificationItem;
-        remaining -= 8;
+        // Only defer when this page actually consumed at least one skill line but
+        // not the full list (long list → fill page 1 with skills, education next page).
+        // If even one skill line does not fit (`takeSkills == 0`), do not defer or
+        // sidebar indices never advance.
+        final t2Page1SkillsStillRemain = templateId == "2" &&
+            pages.isEmpty &&
+            takeSkills > 0 &&
+            (skillIndex + takeSkills < skills.length);
+        if (!t2Page1SkillsStillRemain) {
+          remaining -= sectionHeader + 8;
+          takeEducation = math.min(
+            education.length - educationIndex,
+            math.max(0, (remaining / educationItem).floor()),
+          );
+          remaining -= takeEducation * educationItem;
+          remaining -= 8;
+        }
       }
 
       if (packSidebar &&
@@ -1704,7 +2149,9 @@ class _ResumePreviewBody extends StatelessWidget {
           : (templateId == "1"
               ? (rightInnerHeight - t1ContinuationReserve)
                   .clamp(96.0, rightInnerHeight)
-              : rightInnerHeight);
+              : templateId == "2"
+                  ? (rightInnerHeight - 40.0).clamp(120.0, rightInnerHeight)
+                  : rightInnerHeight);
       final rightCap = _PreviewMetrics.rightSectionCapacity(
         availableHeight: rightAvailHeight,
         availableWidth: rightWidth,
@@ -1723,10 +2170,7 @@ class _ResumePreviewBody extends StatelessWidget {
           skills: skills.sublist(skillIndex, skillIndex + takeSkills),
           education:
               education.sublist(educationIndex, educationIndex + takeEducation),
-          certifications: certifications.sublist(
-            certificationIndex,
-            certificationIndex + takeCerts,
-          ),
+          certifications: const <String>[],
           languages:
               languages.sublist(languageIndex, languageIndex + takeLangs),
           otherLines:
@@ -1737,7 +2181,6 @@ class _ResumePreviewBody extends StatelessWidget {
 
       skillIndex += takeSkills;
       educationIndex += takeEducation;
-      certificationIndex += takeCerts;
       languageIndex += takeLangs;
       otherIndex += takeOther;
       rightIndex += takeRight;
@@ -2143,55 +2586,57 @@ class _ResumePreviewBody extends StatelessWidget {
           if (page.showDetails) ...[
             Center(child: _template2SidebarPhoto(style, compact: compact)),
             const SizedBox(height: 10),
-          ],
-          if (data.email.trim().isNotEmpty)
-            contactRow(Icons.email_outlined, data.email.trim()),
-          if (data.phone.trim().isNotEmpty)
-            contactRow(Icons.phone_outlined, data.phone.trim()),
-          if (city.isNotEmpty) contactRow(Icons.home_outlined, city),
-          if (country.isNotEmpty) contactRow(Icons.public_outlined, country),
-          if (city.isEmpty &&
-              country.isEmpty &&
-              legacyGeo.isNotEmpty)
-            contactRow(Icons.home_outlined, legacyGeo),
-          if (linkedInDisplay != null && linkedInUrl != null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: _tappableContactRow(
-                uri: () {
-                  final raw = linkedInUrl!.trim();
-                  final direct = Uri.tryParse(raw);
-                  if (direct != null &&
-                      direct.hasScheme &&
-                      (direct.scheme == 'http' || direct.scheme == 'https')) {
-                    return direct;
-                  }
-                  return Uri.tryParse('https://$raw');
-                }(),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    goldIcon(Icons.link_rounded),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        linkedInDisplay,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontFamily: _bodyFf,
-                          color: style.sidebarOnColor.withOpacity(0.92),
-                          fontSize: 8.35,
-                          height: 1.25,
-                          decoration: TextDecoration.underline,
+            if (data.email.trim().isNotEmpty)
+              contactRow(Icons.email_outlined, data.email.trim()),
+            if (data.phone.trim().isNotEmpty)
+              contactRow(Icons.phone_outlined, data.phone.trim()),
+            if (city.isNotEmpty) contactRow(Icons.home_outlined, city),
+            if (country.isNotEmpty) contactRow(Icons.public_outlined, country),
+            if (city.isEmpty &&
+                country.isEmpty &&
+                legacyGeo.isNotEmpty)
+              contactRow(Icons.home_outlined, legacyGeo),
+            if (linkedInDisplay != null && linkedInUrl != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: _tappableContactRow(
+                  uri: () {
+                    final raw = linkedInUrl!.trim();
+                    final direct = Uri.tryParse(raw);
+                    if (direct != null &&
+                        direct.hasScheme &&
+                        (direct.scheme == 'http' || direct.scheme == 'https')) {
+                      return direct;
+                    }
+                    return Uri.tryParse('https://$raw');
+                  }(),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      goldIcon(Icons.link_rounded),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          linkedInDisplay,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontFamily: _bodyFf,
+                            color: style.sidebarOnColor.withOpacity(0.92),
+                            fontSize: 8.35,
+                            height: 1.25,
+                            decoration: TextDecoration.underline,
+                          ),
                         ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
-            ),
-          const SizedBox(height: 10),
+            const SizedBox(height: 10),
+          ] else ...[
+            const SizedBox(height: 6),
+          ],
           if (page.skills.isNotEmpty) ...[
             sectionTitle("SKILLS"),
             const SizedBox(height: 8),
@@ -2212,60 +2657,11 @@ class _ResumePreviewBody extends StatelessWidget {
               ),
             const SizedBox(height: 12),
           ],
-          framedEducationTitle(),
-          const SizedBox(height: 10),
-          if (page.education.isEmpty)
-            Text(
-              "NAME OF DEGREE\nConcentration\nUniversity, Location\nGraduation Year",
-              style: TextStyle(
-                fontFamily: _bodyFf,
-                color: style.sidebarOnColor.withOpacity(0.55),
-                fontSize: 8.2,
-                height: 1.25,
-              ),
-            )
-          else
-            for (final e in page.education) educationBlock(e),
-          if (page.certifications.isNotEmpty) ...[
+          if (data.educationList.isNotEmpty) ...[
+            framedEducationTitle(),
             const SizedBox(height: 10),
-            Text(
-              "CERTIFICATIONS",
-              style: TextStyle(
-                fontFamily: _bodyFf,
-                color: style.sidebarOnColor.withOpacity(0.92),
-                fontSize: 8.6,
-                fontWeight: FontWeight.w900,
-                letterSpacing: 1.6,
-              ),
-            ),
-            const SizedBox(height: 6),
-            for (final c in page.certifications)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 5),
-                child: Text(
-                  c.toUpperCase(),
-                  style: TextStyle(
-                    fontFamily: _bodyFf,
-                    color: style.sidebarOnColor.withOpacity(0.86),
-                    fontSize: 8.15,
-                    height: 1.2,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-          ] else ...[
-            const SizedBox(height: 10),
-            Text(
-              "CERTIFICATION HERE",
-              style: TextStyle(
-                fontFamily: _bodyFf,
-                color: style.sidebarOnColor.withOpacity(0.55),
-                fontSize: 8.2,
-                height: 1.2,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 0.8,
-              ),
-            ),
+            if (page.education.isNotEmpty)
+              for (final e in page.education) educationBlock(e),
           ],
           if (page.languages.isNotEmpty) ...[
             const SizedBox(height: 12),
@@ -2457,8 +2853,8 @@ class _ResumePreviewBody extends StatelessWidget {
                 if (data.summary.trim().isNotEmpty)
                   Text(
                     data.summary.trim(),
-                    maxLines: 8,
-                    overflow: TextOverflow.ellipsis,
+                    maxLines: null,
+                    overflow: TextOverflow.visible,
                     style: TextStyle(
                       color: Colors.white.withOpacity(0.7),
                       fontSize: 9.5,
@@ -2777,8 +3173,8 @@ class _ResumePreviewBody extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               data.summary.trim().isEmpty ? " " : data.summary.trim(),
-              maxLines: 7,
-              overflow: TextOverflow.ellipsis,
+              maxLines: null,
+              overflow: TextOverflow.visible,
               style: TextStyle(
                 color: Colors.white.withOpacity(0.75),
                 fontSize: 9,
@@ -3329,12 +3725,12 @@ class _ResumePreviewBody extends StatelessWidget {
                     ? "Work Experience"
                     : "Employment History");
 
-        final t1ShowWorkHeading = style.id != "1"
-            ? true
-            : (section["t1_show_work_heading"] as bool? ?? true);
-        final t1ShowJobHeader = style.id != "1"
-            ? true
-            : (section["t1_show_job_header"] as bool? ?? true);
+        final t1ShowWorkHeading = (style.id == "1" || style.id == "2")
+            ? (section["t1_show_work_heading"] as bool? ?? true)
+            : true;
+        final t1ShowJobHeader = (style.id == "1" || style.id == "2")
+            ? (section["t1_show_job_header"] as bool? ?? true)
+            : true;
 
         final expBlockPadBottom = style.id == "1" ? 12.0 : 18.0;
         return Padding(
@@ -3431,8 +3827,10 @@ class _ResumePreviewBody extends StatelessWidget {
                   String? intro;
                   final bulletLines = <String>[];
                   if (bullets.isNotEmpty) {
-                    if (bullets.length >= 2 &&
-                        (bullets.first.length > 140 || bullets.first.contains('.'))) {
+                    if (t1ShowJobHeader &&
+                        bullets.length >= 2 &&
+                        (bullets.first.length > 140 ||
+                            bullets.first.contains('.'))) {
                       intro = bullets.first;
                       bulletLines.addAll(bullets.skip(1));
                     } else {
@@ -3445,65 +3843,67 @@ class _ResumePreviewBody extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(
-                              child: Text(
-                                role.toUpperCase(),
-                                style: TextStyle(
-                                  fontFamily: _bodyFf,
-                                  fontSize: 10.5,
-                                  fontWeight: FontWeight.w900,
-                                  letterSpacing: 0.8,
-                                  height: 1.1,
-                                  color: const Color(0xFF111827),
+                        if (t1ShowJobHeader) ...[
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  role.toUpperCase(),
+                                  style: TextStyle(
+                                    fontFamily: _bodyFf,
+                                    fontSize: 10.5,
+                                    fontWeight: FontWeight.w900,
+                                    letterSpacing: 0.8,
+                                    height: 1.1,
+                                    color: const Color(0xFF111827),
+                                  ),
                                 ),
+                              ),
+                              if (when.isNotEmpty)
+                                Text(
+                                  when,
+                                  textAlign: TextAlign.right,
+                                  style: TextStyle(
+                                    fontFamily: _bodyFf,
+                                    fontSize: 8.75,
+                                    fontWeight: FontWeight.w600,
+                                    color: const Color(0xFF4B5563),
+                                    height: 1.1,
+                                  ),
+                                ),
+                            ],
+                          ),
+                          if (companyLine.isNotEmpty) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              companyLine,
+                              style: TextStyle(
+                                fontFamily: _bodyFf,
+                                fontSize: 9.1,
+                                fontWeight: FontWeight.w600,
+                                height: 1.2,
+                                color: const Color(0xFF374151),
                               ),
                             ),
-                            if (when.isNotEmpty)
-                              Text(
-                                when,
-                                textAlign: TextAlign.right,
-                                style: TextStyle(
-                                  fontFamily: _bodyFf,
-                                  fontSize: 8.75,
-                                  fontWeight: FontWeight.w600,
-                                  color: const Color(0xFF4B5563),
-                                  height: 1.1,
-                                ),
-                              ),
                           ],
-                        ),
-                        if (companyLine.isNotEmpty) ...[
-                          const SizedBox(height: 4),
-                          Text(
-                            companyLine,
-                            style: TextStyle(
-                              fontFamily: _bodyFf,
-                              fontSize: 9.1,
-                              fontWeight: FontWeight.w600,
-                              height: 1.2,
-                              color: const Color(0xFF374151),
+                          if (intro != null) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              intro,
+                              textAlign: TextAlign.justify,
+                              style: bodyStyle.copyWith(
+                                fontFamily: _bodyFf,
+                                fontSize: 10.0,
+                                height: 1.35,
+                                color: const Color(0xFF111827),
+                              ),
                             ),
-                          ),
-                        ],
-                        if (intro != null) ...[
-                          const SizedBox(height: 8),
-                          Text(
-                            intro,
-                            textAlign: TextAlign.justify,
-                            style: bodyStyle.copyWith(
-                              fontFamily: _bodyFf,
-                              fontSize: 10.0,
-                              height: 1.35,
-                              color: const Color(0xFF111827),
-                            ),
-                          ),
+                          ],
                         ],
                         if (bulletLines.isNotEmpty) ...[
                           SizedBox(height: intro == null ? 8 : 6),
-                          for (final b in bulletLines.take(8))
+                          for (final b in bulletLines)
                             Padding(
                               padding: const EdgeInsets.only(bottom: 3),
                               child: Text(
@@ -3553,7 +3953,7 @@ class _ResumePreviewBody extends StatelessWidget {
                           ),
                         ),
                         const SizedBox(height: 6),
-                        for (final b in bullets.take(4))
+                        for (final b in bullets)
                           Padding(
                             padding:
                                 const EdgeInsets.only(left: 12, bottom: 4),
@@ -3633,7 +4033,7 @@ class _ResumePreviewBody extends StatelessWidget {
                               ),
                               const SizedBox(height: 6),
                               if (bullets.isNotEmpty)
-                                ...bullets.take(4).map(
+                                ...bullets.map(
                                   (b) => Padding(
                                     padding: const EdgeInsets.only(bottom: 4),
                                     child: Text("• $b", style: bodyStyle),
@@ -3671,7 +4071,7 @@ class _ResumePreviewBody extends StatelessWidget {
                       ),
                       const SizedBox(height: 6),
                       if (bullets.isNotEmpty)
-                        ...bullets.take(5).map(
+                        ...bullets.map(
                           (b) => Padding(
                             padding: const EdgeInsets.only(bottom: 4),
                             child: Text(
@@ -3908,10 +4308,13 @@ class _ResumePreviewBody extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _contentTitle(
-                style.id == "1" ? "CERTIFICATION" : "CERTIFICATIONS",
-                style,
-              ),
+              if (style.id == "2")
+                _contentTitleTemplate2("CERTIFICATIONS", style)
+              else
+                _contentTitle(
+                  style.id == "1" ? "CERTIFICATION" : "CERTIFICATIONS",
+                  style,
+                ),
               const SizedBox(height: 10),
               for (final line in items)
                 Padding(
@@ -4859,8 +5262,8 @@ class _ResumePreviewBody extends StatelessWidget {
                 if (data.summary.trim().isNotEmpty)
                   Text(
                     data.summary.trim(),
-                    maxLines: 4,
-                    overflow: TextOverflow.ellipsis,
+                    maxLines: null,
+                    overflow: TextOverflow.visible,
                     style: TextStyle(
                       fontSize: 9.5,
                       height: 1.35,
@@ -5752,15 +6155,8 @@ class _TemplateStyles {
 }
 
 class _PreviewMetrics {
-  /// Logical “paper” width (pt-ish).
+  /// Logical “paper” width; page height uses [PdfService.styledTemplateExportPageFormat] ratio.
   static const double pageWidth = 600.0;
-
-  /// Same aspect as [PdfPageFormat.a4] (595.28 × 841.89 pt) so raster export matches PDF pages.
-  static const double _a4w = 595.28;
-  static const double _a4h = 841.89;
-
-  static double pageHeightFor(double paperWidth) =>
-      paperWidth * _a4h / _a4w;
 
   static int rightSectionCapacity({
     required double availableHeight,
@@ -5789,21 +6185,50 @@ class _PreviewMetrics {
         // Prevent long summaries from consuming an entire first page in preview.
         // This keeps page 1 showing Experience/Education like real ATS resumes.
         if (!t1 && isProfileSummary) lines = math.min(lines, 8);
-        h = 46 + lines * (t1 ? 13.6 : 15.0);
+        h = 46 +
+            lines *
+                (t1
+                    ? 13.6
+                    : (templateId == "2" ? 16.4 : 15.0));
         if (t1) h += 2;
       } else if (type == "experience") {
         final items = (s["items"] as List?) ?? const [];
         final t1wh = (s["t1_show_work_heading"] as bool?) ?? true;
         final t1jh = (s["t1_show_job_header"] as bool?) ?? true;
-        // Slightly optimistic for template 1 so pages 1–2 pack like page 3; clip is rare.
-        h = t1wh ? 46 : 8;
-        for (var i = 0; i < items.length; i++) {
-          final exp = items[i] as Experience;
-          final n =
-              exp.description.where((b) => b.trim().isNotEmpty).length;
-          h += (t1jh ? 48 : 10) + n * (t1 ? 14.8 : 17.0);
+        if (templateId == "2") {
+          h = t1wh ? 52 : 8;
+          for (var i = 0; i < items.length; i++) {
+            final exp = items[i] as Experience;
+            final bullets = exp.description
+                .map((b) => b.trim())
+                .where((b) => b.isNotEmpty)
+                .toList();
+            var introExtra = 0.0;
+            var n = bullets.length;
+            if (bullets.length >= 2 &&
+                (bullets.first.length > 140 ||
+                    bullets.first.contains('.'))) {
+              introExtra = 46;
+              n = bullets.length - 1;
+            }
+            h += (t1jh ? 56 : 10);
+            h += introExtra;
+            if (n > 0 || introExtra > 0) h += 10;
+            h += n * 23.0;
+            h += 18;
+          }
+          h += 20;
+        } else {
+          // Slightly optimistic for template 1 so pages 1–2 pack like page 3; clip is rare.
+          h = t1wh ? 46 : 8;
+          for (var i = 0; i < items.length; i++) {
+            final exp = items[i] as Experience;
+            final n =
+                exp.description.where((b) => b.trim().isNotEmpty).length;
+            h += (t1jh ? 48 : 10) + n * (t1 ? 14.8 : 17.0);
+          }
+          h += t1 ? 14 : 18;
         }
-        h += t1 ? 14 : 18;
       } else if (type == "education") {
         final items = (s["items"] as List?) ?? const [];
         h = t1 ? 44 + items.length * 34.0 : 52 + items.length * 44.0;
@@ -5860,6 +6285,8 @@ class _PreviewMetrics {
     return math.max(1, count);
   }
 }
+
+enum _ResumeExportKind { styledPreview, atsText }
 
 class _ResumePreviewPageData {
   final bool showDetails;
