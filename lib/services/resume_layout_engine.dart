@@ -39,7 +39,61 @@ class ResumeLayoutEngine {
     if (templateId == "2") {
       return _layoutTemplate2(data);
     }
+    if (templateId == "3") {
+      return _layoutMainWithoutProfile(data);
+    }
+    if (templateId == "4") {
+      return _layoutTemplate4(data);
+    }
     return _layoutDefault(data);
+  }
+
+  /// Summary lives in the template 3 header ribbon — omit PROFILE on the main column.
+  static List<Map<String, dynamic>> _layoutMainWithoutProfile(ResumeData data) {
+    return [
+      {
+        "type": "header",
+        "name": data.name,
+        "email": data.email,
+        "phone": data.phone,
+      },
+      {
+        "type": "experience",
+        "items": data.experiences,
+      },
+      if (data.educationList.isNotEmpty)
+        {
+          "type": "education",
+          "items": data.educationList,
+        },
+    ];
+  }
+
+  /// Black & yellow: photo + skills in sidebar; ABOUT ME + employment on the right.
+  static List<Map<String, dynamic>> _layoutTemplate4(ResumeData data) {
+    return [
+      {
+        "type": "header",
+        "name": data.name,
+        "email": data.email,
+        "phone": data.phone,
+      },
+      if (data.summary.trim().isNotEmpty)
+        {
+          "type": "section",
+          "title": "ABOUT ME",
+          "content": data.summary.trim(),
+        },
+      {
+        "type": "experience",
+        "items": data.experiences,
+      },
+      if (data.educationList.isNotEmpty)
+        {
+          "type": "education",
+          "items": data.educationList,
+        },
+    ];
   }
 
   /// Navy sidebar holds education; main column: summary, experience, certifications.
@@ -150,6 +204,12 @@ class ResumeLayoutEngine {
       if (skills.length >= 36) break;
     }
 
+    final references = (data.categories["References"] ?? const <String>[])
+        .map((s) => CategoryEntryDisplay.primarySecondaryLine(s))
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+
     return [
       {
         "type": "header",
@@ -202,6 +262,11 @@ class ResumeLayoutEngine {
         {
           "type": "languages",
           "items": languages,
+        },
+      if (references.isNotEmpty)
+        {
+          "type": "references",
+          "items": references,
         },
     ];
   }

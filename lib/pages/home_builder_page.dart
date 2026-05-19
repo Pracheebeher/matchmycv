@@ -135,6 +135,42 @@ class _HomeBuilderPageState extends State<HomeBuilderPage> {
     return '';
   }
 
+  /// Known editor category keys plus any extra buckets from PDF import (Frameworks, etc.).
+  Map<String, List<String>> _categoriesFromResumeData(ResumeData data) {
+    final map = <String, List<String>>{
+      'Languages': (data.categories['Languages'] ?? const <String>[])
+          .map(CategoryEntryDisplay.normalizeLanguageStorage)
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList(),
+      'Courses': List<String>.from(data.categories['Courses'] ?? []),
+      'Certifications':
+          List<String>.from(data.categories['Certifications'] ?? []),
+      'City': List<String>.from(data.categories['City'] ?? []),
+      'Country': List<String>.from(data.categories['Country'] ?? []),
+      'Links': List<String>.from(data.categories['Links'] ?? []),
+      'Hobbies': CategoryEntryDisplay.sanitizeHobbyItems(
+        data.categories['Hobbies'] ?? const <String>[],
+      ),
+      'Volunteering': List<String>.from(data.categories['Volunteering'] ?? []),
+      'References': List<String>.from(data.categories['References'] ?? []),
+      'Projects': List<String>.from(data.categories['Projects'] ?? []),
+      'Achievements':
+          List<String>.from(data.categories['Achievements'] ?? []),
+    };
+    for (final e in data.categories.entries) {
+      if (_personalGeoCategoryKeys.contains(e.key)) continue;
+      if (map.containsKey(e.key)) continue;
+      map[e.key] = List<String>.from(e.value);
+    }
+    return map;
+  }
+
+  void _mergeImportedSkillBucketsIntoModelSkills() {
+    AIResumeParser.foldSkillCategoryBucketsIntoSkills(widget.data);
+    skills = List.from(widget.data.skills);
+  }
+
   /// Older resumes used a single [Location] bucket; split into City / Country when empty.
   void _migrateLegacyLocationToCityCountry() {
     final legacy = _firstCategoryValue(widget.data, 'Location');
@@ -170,27 +206,10 @@ class _HomeBuilderPageState extends State<HomeBuilderPage> {
    experiences = List.from(widget.data.experiences);
    educationList = List.from(widget.data.educationList);
    _normalizeEducationListInPlace();
+   _promoteImportedExperienceDurationFromBlob();
+   _stripDuplicateExperienceDurationBullets();
 
-   // ✅ SAFE INIT (NO overwrite issue)
-   categories = {
-     "Languages": (widget.data.categories["Languages"] ?? const <String>[])
-         .map(CategoryEntryDisplay.normalizeLanguageStorage)
-         .map((s) => s.trim())
-         .where((s) => s.isNotEmpty)
-         .toList(),
-     "Courses": List<String>.from(widget.data.categories["Courses"] ?? []),
-     "Certifications":
-         List<String>.from(widget.data.categories["Certifications"] ?? []),
-     "City": List<String>.from(widget.data.categories["City"] ?? []),
-     "Country": List<String>.from(widget.data.categories["Country"] ?? []),
-     "Links": List<String>.from(widget.data.categories["Links"] ?? []),
-     "Hobbies": List<String>.from(widget.data.categories["Hobbies"] ?? []),
-     "Volunteering": List<String>.from(widget.data.categories["Volunteering"] ?? []),
-     "References": List<String>.from(widget.data.categories["References"] ?? []),
-     "Projects": List<String>.from(widget.data.categories["Projects"] ?? []),
-     "Achievements":
-         List<String>.from(widget.data.categories["Achievements"] ?? []),
-   };
+   categories = _categoriesFromResumeData(widget.data);
 
    city.text = _firstCategoryValue(widget.data, 'City');
    country.text = _firstCategoryValue(widget.data, 'Country');
@@ -450,7 +469,10 @@ class _HomeBuilderPageState extends State<HomeBuilderPage> {
    widget.data.summary = summary.text;
 
    widget.data.skills = List.from(skills);
+   _promoteImportedExperienceDurationFromBlob();
+   _stripDuplicateExperienceDurationBullets();
    widget.data.experiences = List.from(experiences);
+   _normalizeEducationListInPlace();
    widget.data.educationList = List.from(educationList);
 
    _persistCategoriesToModel();
@@ -977,6 +999,20 @@ Widget modernDialog({
                             (mapEntry) {
                               final i = mapEntry.key;
                               final e = mapEntry.value;
+                              final whenLine = _experienceDurationLine(e);
+                              final companyLine =
+                                  AIResumeParser.companyForExperienceDisplay(
+                                e.company,
+                                whenLine.isNotEmpty ? whenLine : e.duration,
+                              );
+                              final titleLine = companyLine.isEmpty
+                                  ? e.role.trim()
+                                  : '${e.role.trim()} - $companyLine';
+                              final detailBullets = AIResumeParser
+                                  .stripDuplicateDurationBullets(
+                                e.description,
+                                whenLine.isNotEmpty ? whenLine : e.duration,
+                              );
                               return Container(
                                 margin: const EdgeInsets.only(bottom: 10),
                                 decoration: BoxDecoration(
@@ -1025,7 +1061,7 @@ Widget modernDialog({
                                                   CrossAxisAlignment.start,
                                               children: [
                                                 Text(
-                                                  "${e.role} - ${e.company}",
+                                                  titleLine,
                                                   style: const TextStyle(
                                                     color: Colors.white,
                                                     fontWeight: FontWeight.w900,
@@ -1034,14 +1070,9 @@ Widget modernDialog({
                                                 const SizedBox(height: 4),
                                                 Text(
                                                   [
-                                                    e.duration,
-                                                    if (e.description.isNotEmpty)
-                                                      e.description
-                                                          .map((b) => b.trim())
-                                                          .where(
-                                                              (b) => b.isNotEmpty)
-                                                          .map((b) => '• $b')
-                                                          .join('\n'),
+                                                    whenLine,
+                                                    ...detailBullets
+                                                        .map((b) => '• $b'),
                                                   ]
                                                       .where((x) =>
                                                           x.trim().isNotEmpty)
@@ -2178,6 +2209,70 @@ IconData getCategoryIcon(String key) {
     }
   }
 
+  String _experienceDurationLine(Experience e) {
+    var raw = e.duration.trim();
+    if (raw.isEmpty) {
+      raw = AIResumeParser.experiencePeriodFromFreeText(
+            '${e.role} ${e.company}',
+          ) ??
+          '';
+    }
+    if (raw.isEmpty) return '';
+    final formatted = AIResumeParser.formatExperienceDurationDisplay(raw);
+    final p = _parseExperienceDurationFields(formatted);
+    final a = p.start.trim();
+    final b = p.end.trim();
+    if (a.isNotEmpty && b.isNotEmpty) return '$a - $b';
+    if (a.isNotEmpty && p.isPresent) return '$a - Present';
+    if (a.isNotEmpty) return a;
+    if (b.isNotEmpty) return b;
+    return formatted;
+  }
+
+  void _stripDuplicateExperienceDurationBullets() {
+    for (var i = 0; i < experiences.length; i++) {
+      experiences[i] = AIResumeParser.normalizeImportedExperience(experiences[i]);
+    }
+  }
+
+  void _promoteImportedExperienceDurationFromBlob() {
+    for (var i = 0; i < experiences.length; i++) {
+      final e = experiences[i];
+      if (e.duration.trim().isNotEmpty) {
+        final norm = AIResumeParser.formatExperienceDurationDisplay(e.duration);
+        if (norm != e.duration.trim()) {
+          experiences[i] = Experience(
+            role: e.role,
+            company: e.company,
+            duration: norm,
+            description: e.description,
+          );
+        }
+        continue;
+      }
+      final ext = AIResumeParser.experiencePeriodFromFreeText(
+        '${e.role} ${e.company}',
+      );
+      if (ext == null || ext.isEmpty) continue;
+
+      var role = e.role.trim();
+      var company = e.company.trim();
+      final extLow = ext.toLowerCase();
+      if (company.isNotEmpty && company.toLowerCase().contains(extLow)) {
+        company = _stripInsensitiveSubstringOnce(company, ext);
+      } else if (role.isNotEmpty && role.toLowerCase().contains(extLow)) {
+        role = _stripInsensitiveSubstringOnce(role, ext);
+      }
+
+      experiences[i] = Experience(
+        role: role,
+        company: company,
+        duration: AIResumeParser.formatExperienceDurationDisplay(ext),
+        description: e.description,
+      );
+    }
+  }
+
   /// Parses imported or legacy duration strings into start/end display text and Present flag.
   ({String start, String end, bool isPresent}) _parseExperienceDurationFields(
     String raw,
@@ -2389,30 +2484,11 @@ IconData getCategoryIcon(String key) {
     experiences = List.from(widget.data.experiences);
     educationList = List.from(widget.data.educationList);
     _normalizeEducationListInPlace();
+    _promoteImportedExperienceDurationFromBlob();
+   _stripDuplicateExperienceDurationBullets();
 
-    categories = {
-      "Languages": (widget.data.categories["Languages"] ?? const <String>[])
-          .map(CategoryEntryDisplay.normalizeLanguageStorage)
-          .map((s) => s.trim())
-          .where((s) => s.isNotEmpty)
-          .toList(),
-      "Courses": List<String>.from(widget.data.categories["Courses"] ?? []),
-      "Certifications":
-          List<String>.from(widget.data.categories["Certifications"] ?? []),
-      "City": List<String>.from(widget.data.categories["City"] ?? []),
-      "Country": List<String>.from(widget.data.categories["Country"] ?? []),
-      "Links": List<String>.from(widget.data.categories["Links"] ?? []),
-      "Hobbies": CategoryEntryDisplay.sanitizeHobbyItems(
-        widget.data.categories["Hobbies"] ?? const <String>[],
-      ),
-      "Volunteering":
-          List<String>.from(widget.data.categories["Volunteering"] ?? []),
-      "References":
-          List<String>.from(widget.data.categories["References"] ?? []),
-      "Projects": List<String>.from(widget.data.categories["Projects"] ?? []),
-      "Achievements":
-          List<String>.from(widget.data.categories["Achievements"] ?? []),
-    };
+    categories = _categoriesFromResumeData(widget.data);
+    _mergeImportedSkillBucketsIntoModelSkills();
 
     city.text = _firstCategoryValue(widget.data, 'City');
     country.text = _firstCategoryValue(widget.data, 'Country');

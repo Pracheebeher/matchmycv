@@ -1,21 +1,23 @@
 import 'package:flutter/material.dart';
 
+import 'resume_typography.dart';
+
 class ResumeTheme {
   static const accent = Color(0xFF4A90E2);
 
   static const nameStyle = TextStyle(
-    fontSize: 24,
+    fontSize: ResumeTypography.name,
     fontWeight: FontWeight.bold,
   );
 
   static const sectionTitle = TextStyle(
-    fontSize: 14,
+    fontSize: ResumeTypography.sectionTitle,
     fontWeight: FontWeight.bold,
     letterSpacing: 1.2,
   );
 
   static const body = TextStyle(
-    fontSize: 12,
-    height: 1.5,
+    fontSize: ResumeTypography.body,
+    height: ResumeTypography.lineHeightBody,
   );
 }

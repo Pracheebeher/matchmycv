@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 
 import '../models/resume_model.dart';
 import '../utils/category_entry_display.dart';
+import '../utils/experience_display.dart';
 import '../utils/pdf_export_ats_markers.dart';
 import 'pdf_text_extractor.dart';
 
@@ -84,6 +85,15 @@ class AIResumeParser {
     _sanitizeImportedResume(data);
   }
 
+  /// Normalizes one experience row (dates, company, deduped description bullets).
+  static Experience normalizeImportedExperience(Experience e) =>
+      _normalizeExperienceRow(e);
+
+  /// Public entry for UI sync after PDF import (see home builder).
+  static void foldSkillCategoryBucketsIntoSkills(ResumeData data) {
+    _foldSkillCategoryBucketsIntoSkills(data);
+  }
+
   /// Extract text, apply local parse, fill experiences from heuristics when empty,
   /// then sanitize. Returns the full extracted text for [refineResumeWithOpenAI].
   static Future<String> extractAndApplyQuickParse(
@@ -125,11 +135,10 @@ class AIResumeParser {
     ResumeData data,
   ) async {
     final raw = fullText.trim();
-    final forModel = _headTailForOpenAiModel(
-      // Prefer cleaned text for the model, but don't starve it when stripping
-      // removes almost everything (common for screenshot+embedded-text PDFs).
-      chooseTextForLocalParse(fullText),
-      maxChars: _maxCharsForModel,
+    final cleaned = chooseTextForLocalParse(fullText);
+    final forModel = _composeTextForOpenAiModel(
+      cleaned,
+      raw.isNotEmpty ? raw : fullText,
     );
     await _refineWithOpenAI(forModel, data, raw.isNotEmpty ? raw : fullText);
     // Always run heuristic merge after refine: OpenAI often truncates bullet lists,
@@ -186,6 +195,64 @@ class AIResumeParser {
     final tailStart = math.max(head.length, t.length - tailChars);
     final tail = t.substring(tailStart);
     return '$head$marker$tail';
+  }
+
+  /// Full work-history text for the model when head/tail would omit mid-resume jobs.
+  static String? _extractWorkExperienceSectionText(String rawText) {
+    final lines = rawText
+        .split(RegExp(r'\r?\n'))
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+    if (lines.isEmpty) return null;
+
+    int? start;
+    for (var i = 0; i < lines.length; i++) {
+      final low = lines[i].toLowerCase();
+      if (RegExp(
+        r'^(experience|work experience|professional experience|employment(\s+history)?|work history|career history|relevant experience)\s*:?$',
+        caseSensitive: false,
+      ).hasMatch(low)) {
+        start = i;
+        break;
+      }
+    }
+    if (start == null) return null;
+
+    var end = lines.length;
+    for (var i = start + 1; i < lines.length; i++) {
+      final low = lines[i].toLowerCase();
+      if (RegExp(
+        r'^(education|academic|summary|objective|profile|references|publications|volunteer|interests|awards)\b',
+        caseSensitive: false,
+      ).hasMatch(low)) {
+        end = i;
+        break;
+      }
+    }
+    final body = lines.sublist(start, end).join('\n').trim();
+    return body.length >= 40 ? body : null;
+  }
+
+  static String _composeTextForOpenAiModel(String cleaned, String rawFull) {
+    final base = _headTailForOpenAiModel(cleaned, maxChars: _maxCharsForModel);
+    final expSection = _extractWorkExperienceSectionText(rawFull) ??
+        _extractWorkExperienceSectionText(cleaned);
+    if (expSection == null) return base;
+
+    const marker = '\n\n--- WORK EXPERIENCE (complete section) ---\n\n';
+    const maxExp = 16000;
+    final exp = expSection.length > maxExp
+        ? '${expSection.substring(0, maxExp - 1)}…'
+        : expSection;
+    var combined = '$base$marker$exp';
+    const hardCap = _maxCharsForModel + 12000;
+    if (combined.length > hardCap) {
+      final trimBy = combined.length - hardCap;
+      final headLen = math.max(8000, base.length - trimBy);
+      combined = '${base.substring(0, headLen)}$marker$exp';
+    }
+    return combined;
   }
 
   static String _categoryLineFromJsonValue(dynamic x) {
@@ -1042,7 +1109,11 @@ class AIResumeParser {
       r'\b(19|20)\d{2}\s*[-–]\s*(present|current|now|today|\w+\s+(19|20)\d{2})\b',
       caseSensitive: false,
     ).hasMatch(x)) {
-      return true;
+      final eduHint = RegExp(
+        r'\b(bachelor|bachelors|master|masters|mba|m\.?\s*b\.?a\.?|ph\.?\s*d\.?|doctor|doctorate|associate|diploma|degree|university|college|institute|institution|school|academy|gpa|cgpa|btech|b\.?\s*tech|mtech|m\.?\s*tech|postgraduate|undergraduate)\b',
+        caseSensitive: false,
+      ).hasMatch(x);
+      if (!eduHint) return true;
     }
     return false;
   }
@@ -1250,6 +1321,203 @@ class AIResumeParser {
   /// from free text when imports leave [Education.year] empty but embed dates in degree/institution.
   static String? educationPeriodFromFreeText(String raw) =>
       _extractAnyEducationPeriod(raw);
+
+  /// Same date-span extraction for jobs when [Experience.duration] is empty.
+  static String? experiencePeriodFromFreeText(String raw) =>
+      _extractAnyEducationPeriod(raw);
+
+  /// Normalizes `Jan 2020 - Present` / `01/2020-05/2022` for display and editors.
+  static String formatExperienceDurationDisplay(String raw) {
+    var s = raw.trim().replaceAll(RegExp(r'[–—]'), '-');
+    if (s.isEmpty) return '';
+
+    var segments = s
+        .split(RegExp(r'\s*-\s*|\s+to\s+', caseSensitive: false))
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+
+    var isPresent = false;
+    if (segments.isNotEmpty) {
+      final last = segments.last.toLowerCase();
+      if (last == 'present' || last == 'current' || last == 'now') {
+        isPresent = true;
+        segments = segments.sublist(0, segments.length - 1);
+      }
+    }
+    if (segments.isEmpty) {
+      return isPresent ? 'Present' : '';
+    }
+
+    String normToken(String token) =>
+        _tryNormalizeMonYearToken(token) ?? token.trim();
+
+    final start = normToken(segments.first);
+    if (isPresent) return '$start - Present';
+    if (segments.length >= 2) {
+      return '$start - ${normToken(segments.last)}';
+    }
+    return start;
+  }
+
+  static String _stripExperienceBulletPrefix(String line) => line
+      .trim()
+      .replaceFirst(RegExp(r'^[•\-\*·▪►◦\u2022]\s*'), '')
+      .trim();
+
+  static String _canonicalDurationCompareText(String raw) {
+    var s = _stripExperienceBulletPrefix(raw);
+    s = s.replaceAll(RegExp(r'[–—]'), '-');
+    s = s.replaceAll(RegExp(r'\s+to\s+', caseSensitive: false), ' - ');
+    return formatExperienceDurationDisplay(s).trim().toLowerCase();
+  }
+
+  static bool _normalizedDurationsEqual(String a, String b) {
+    final x = _canonicalDurationCompareText(a);
+    final y = _canonicalDurationCompareText(b);
+    if (x.isEmpty || y.isEmpty) return false;
+    if (x == y) return true;
+    // Same month/year bounds even if wording differs slightly.
+    final ax = experiencePeriodFromFreeText(a);
+    final ay = experiencePeriodFromFreeText(b);
+    if (ax != null && ay != null) {
+      return _canonicalDurationCompareText(ax) == _canonicalDurationCompareText(ay);
+    }
+    return false;
+  }
+
+  /// Company line for templates: remove a trailing date span already shown in the header.
+  static String companyForExperienceDisplay(String company, String duration) {
+    var c = company.trim();
+    if (c.isEmpty) return '';
+    final dur = formatExperienceDurationDisplay(duration.trim());
+    if (dur.isEmpty) return c;
+
+    final split = _splitCompanyAndDurationLine(c);
+    if (split.$2.trim().isNotEmpty &&
+        _normalizedDurationsEqual(split.$2, dur)) {
+      final left = split.$1.trim();
+      if (left.isNotEmpty) return left;
+    }
+
+    if (_lineDuplicatesExperienceDuration(c, dur)) return '';
+
+    final extracted = experiencePeriodFromFreeText(c);
+    if (extracted != null && _normalizedDurationsEqual(extracted, dur)) {
+      for (final needle in <String>[extracted, duration.trim(), dur]) {
+        if (needle.isEmpty) continue;
+        final idx = c.toLowerCase().indexOf(needle.toLowerCase());
+        if (idx >= 0) {
+          c = (c.substring(0, idx) + c.substring(idx + needle.length))
+              .replaceAll(RegExp(r'\s+'), ' ')
+              .trim();
+        }
+      }
+      c = c
+          .replaceAll(RegExp(r'^[,|;\-\s]+'), '')
+          .replaceAll(RegExp(r'[,|;\-\s]+$'), '')
+          .trim();
+    }
+    return c;
+  }
+
+  /// True when [line] is only a date span that matches [duration] (header duplicate).
+  static bool _lineDuplicatesExperienceDuration(String line, String duration) {
+    var d = _stripExperienceBulletPrefix(line);
+    if (d.isEmpty || duration.trim().isEmpty) return false;
+    d = d.replaceAll(RegExp(r'\s+to\s+', caseSensitive: false), ' - ');
+    if (_normalizedDurationsEqual(d, duration)) return true;
+    if (_isStandaloneExperienceDurationLine(d)) {
+      return _normalizedDurationsEqual(d, duration);
+    }
+    final extracted = experiencePeriodFromFreeText(d);
+    if (extracted != null && _normalizedDurationsEqual(extracted, duration)) {
+      return true;
+    }
+    // Line is only the date span plus punctuation / whitespace.
+    final onlyDate = extracted ?? formatExperienceDurationDisplay(d);
+    if (onlyDate.isNotEmpty) {
+      final rest = d
+          .replaceAll(onlyDate, '')
+          .replaceAll(extracted ?? '', '')
+          .replaceAll(RegExp(r'[^A-Za-z0-9]+'), '')
+          .trim();
+      if (rest.isEmpty && _normalizedDurationsEqual(onlyDate, duration)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Drops bullets that repeat the job's [duration] (shown in the header already).
+  static List<String> stripDuplicateDurationBullets(
+    List<String> description,
+    String duration,
+  ) {
+    if (duration.trim().isEmpty) return description;
+    final norm = formatExperienceDurationDisplay(duration);
+    return description
+        .where((raw) => !_lineDuplicatesExperienceDuration(raw, norm))
+        .toList();
+  }
+
+  static Experience _normalizeExperienceRow(Experience e) {
+    var role = e.role.trim();
+    var company = e.company.trim();
+    var duration = e.duration.trim();
+
+    if (duration.isEmpty && company.isNotEmpty) {
+      final split = _splitCompanyAndDurationLine(company);
+      if (split.$2.trim().isNotEmpty) {
+        company = split.$1.trim();
+        duration = split.$2.trim();
+      }
+    }
+    if (duration.isEmpty && role.isNotEmpty) {
+      final split = _splitCompanyAndDurationLine(role);
+      if (split.$2.trim().isNotEmpty) {
+        role = split.$1.trim();
+        duration = split.$2.trim();
+      }
+    }
+    if (duration.isEmpty) {
+      final fromBlob = experiencePeriodFromFreeText('$role $company');
+      if (fromBlob != null && fromBlob.isNotEmpty) duration = fromBlob;
+    }
+
+    var description = List<String>.from(e.description);
+    if (duration.isEmpty && description.isNotEmpty) {
+      final kept = <String>[];
+      for (final raw in description) {
+        final d = raw.trim();
+        if (duration.isEmpty && _isStandaloneExperienceDurationLine(d)) {
+          duration = d;
+          continue;
+        }
+        kept.add(raw);
+      }
+      description = kept;
+    }
+
+    duration = formatExperienceDurationDisplay(duration);
+
+    if (duration.isNotEmpty && company.isNotEmpty) {
+      final split = _splitCompanyAndDurationLine(company);
+      if (split.$2.trim().isNotEmpty &&
+          _normalizedDurationsEqual(split.$2, duration)) {
+        company = split.$1.trim();
+      }
+    }
+
+    description = stripDuplicateDurationBullets(description, duration);
+
+    return Experience(
+      role: role,
+      company: company,
+      duration: duration,
+      description: description,
+    );
+  }
 
   /// Fills empty [Education.year], pulls trailing year ranges off [Education.institution].
   static Education _normalizeEducationRow(Education e) {
@@ -1899,6 +2167,30 @@ class AIResumeParser {
     return (t, '');
   }
 
+  /// True when a line is only a job date span (often on its own line under company).
+  static bool _isStandaloneExperienceDurationLine(String line) {
+    var t = _stripExperienceBulletPrefix(line).replaceAll(RegExp(r'[–—]'), '-');
+    t = t.replaceAll(RegExp(r'\s+to\s+', caseSensitive: false), ' - ');
+    if (t.isEmpty || t.length > 96) return false;
+    if (RegExp(
+      r'^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{4}\s*-\s*(?:Present|Current|Now|Today|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{4})$',
+      caseSensitive: false,
+    ).hasMatch(t)) {
+      return true;
+    }
+    if (RegExp(
+      r'^\d{1,2}/(?:19|20)\d{2}\s*-\s*\d{1,2}/(?:19|20)\d{2}$',
+      caseSensitive: false,
+    ).hasMatch(t)) {
+      return true;
+    }
+    if (RegExp(r'^(?:19|20)\d{2}\s*-\s*(?:19|20)\d{2}$').hasMatch(t)) {
+      return true;
+    }
+    return experiencePeriodFromFreeText(t) != null &&
+        t.split(RegExp(r'\s+')).length <= 8;
+  }
+
   /// When refine fails or omits jobs, infer blocks from an Experience / Work History section.
   static void _applyExperienceHeuristicFallback(String rawText, ResumeData data) {
     final lines = rawText
@@ -1990,6 +2282,12 @@ class AIResumeParser {
         continue;
       }
 
+      if (ExperienceDisplay.looksLikeMetaLine(line) ||
+          ExperienceDisplay.looksLikeResponsibilitiesHeading(line)) {
+        i++;
+        continue;
+      }
+
       if (line.length > 100) {
         i++;
         continue;
@@ -2002,10 +2300,20 @@ class AIResumeParser {
         continue;
       }
 
+      if (_looksLikeMisreadExperienceHeader(line)) {
+        i++;
+        continue;
+      }
+
       var role = line.trim();
-      i++;
       var company = '';
       var duration = '';
+      final roleDates = _splitCompanyAndDurationLine(role);
+      if (roleDates.$2.trim().isNotEmpty) {
+        role = roleDates.$1.trim();
+        duration = roleDates.$2.trim();
+      }
+      i++;
       final bullets = <String>[];
       var inResponsibilitiesBlock = false;
       var lastBullet = '';
@@ -2050,6 +2358,13 @@ class AIResumeParser {
         }
       }
 
+      if (duration.isEmpty &&
+          i < slice.length &&
+          _isStandaloneExperienceDurationLine(slice[i])) {
+        duration = slice[i].trim();
+        i++;
+      }
+
       while (i < slice.length) {
         final raw = slice[i].trim();
         if (raw.isEmpty) {
@@ -2063,6 +2378,12 @@ class AIResumeParser {
 
         // Stop when we likely reached the next role line.
         if (looksLikeRoleHeaderAt(i)) break;
+
+        if (duration.isEmpty && _isStandaloneExperienceDurationLine(raw)) {
+          duration = raw;
+          i++;
+          continue;
+        }
 
         if (bullet(raw)) {
           final b = cleanBullet(raw);
@@ -2083,6 +2404,16 @@ class AIResumeParser {
                 caseSensitive: false)
             .hasMatch(low)) {
           inResponsibilitiesBlock = true;
+          bullets.add(raw);
+          i++;
+          continue;
+        }
+
+        if (RegExp(
+          r'^(client|defect\s+management\s+tool|project|tool|environment|platform|technology|product|application)\s*:',
+          caseSensitive: false,
+        ).hasMatch(low)) {
+          bullets.add(raw);
           i++;
           continue;
         }
@@ -2123,52 +2454,57 @@ class AIResumeParser {
 
     if (inferred.isEmpty) return;
     if (data.experiences.isEmpty) {
-      data.experiences = inferred;
+      data.experiences = inferred
+          .where((e) => !_isClientOnlyExperienceRow(e))
+          .map(
+            (e) => Experience(
+              role: e.role.trim(),
+              company: e.company.trim(),
+              duration: e.duration.trim(),
+              description: _dedupeBullets(e.description),
+            ),
+          )
+          .toList();
       return;
     }
 
-    // Merge: keep existing jobs (from OpenAI) but append missing responsibilities.
-    // OpenAI often formats duration differently, so match primarily on role+company
-    // and fall back to exact duration match when available.
-    String norm(String s) => s.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
-    String keyRoleCompany(Experience e) => '${norm(e.role)}|${norm(e.company)}';
-    String keyFull(Experience e) => '${keyRoleCompany(e)}|${norm(e.duration)}';
+    _mergeInferredExperiencesIntoData(inferred, data);
+    _consolidateExperiences(data);
+  }
 
-    final byFull = <String, Experience>{};
-    final byRoleCompany = <String, Experience>{};
-    for (final e in data.experiences) {
-      byFull[keyFull(e)] = e;
-      byRoleCompany.putIfAbsent(keyRoleCompany(e), () => e);
-    }
-
+  /// Merges PDF-heuristic jobs into OpenAI rows; appends distinct roles employers missed.
+  static void _mergeInferredExperiencesIntoData(
+    List<Experience> inferred,
+    ResumeData data,
+  ) {
     for (final inf in inferred) {
-      final target =
-          byFull[keyFull(inf)] ?? byRoleCompany[keyRoleCompany(inf)];
-      if (target == null) continue;
-      final seen = <String>{
-        for (final b in target.description)
-          b.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ')
-      };
-      for (final b in inf.description) {
-        final norm = b.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
-        if (norm.isEmpty || seen.contains(norm)) continue;
-        target.description.add(b.trim());
-        seen.add(norm);
+      if (_isClientOnlyExperienceRow(inf)) continue;
+      final role = inf.role.trim();
+      if (role.isEmpty) continue;
+
+      final matchIdx =
+          data.experiences.indexWhere((e) => _experiencesLikelySame(e, inf));
+      if (matchIdx >= 0) {
+        _mergeIntoExperience(data.experiences[matchIdx], inf);
+        continue;
       }
-    }
 
-    // Heuristic blocks that did not align with any OpenAI row (renamed company,
-    // different date formatting, or missing roles) are still appended so imports
-    // do not silently drop jobs.
-    final knownRoleCompany = <String>{
-      for (final e in data.experiences) keyRoleCompany(e),
-    };
-    for (final inf in inferred) {
-      final k = keyRoleCompany(inf);
-      if (k.replaceAll('|', '').trim().isEmpty) continue;
-      if (knownRoleCompany.contains(k)) continue;
-      data.experiences.add(inf);
-      knownRoleCompany.add(k);
+      if (_isGhostExperienceCandidate(inf, data.experiences)) {
+        final hostIdx = _findHostForGhostExperience(inf, data.experiences);
+        if (hostIdx >= 0) {
+          _mergeIntoExperience(data.experiences[hostIdx], inf);
+          continue;
+        }
+      }
+
+      data.experiences.add(
+        Experience(
+          role: role,
+          company: inf.company.trim(),
+          duration: inf.duration.trim(),
+          description: _dedupeBullets(inf.description),
+        ),
+      );
     }
   }
 
@@ -2212,9 +2548,16 @@ class AIResumeParser {
                       'Languages, Courses, Certifications, Achievements, Links, Hobbies, Volunteering, References, City, Country). '
                       'For summary: copy the full professional profile/objective text from the resume when present — do not shorten. '
                       'For each experience entry, include EVERY responsibility bullet from the resume (do not cap or summarize bullets). '
+                      'For EVERY experience entry set duration (or dates) to the exact month/year range from the resume '
+                      '(e.g. "Jan 2018 - Mar 2021"); never leave duration empty when dates appear in the source. '
                       'Include EVERY distinct paid role / contract / internship as its own experience object '
                       '(same employer multiple times is OK if dates or titles differ). '
+                      'Count all roles in the Work Experience section — if the resume lists 5 jobs, return 5 objects; '
+                      'never return only the most recent 2–3. '
                       'Do not merge separate jobs into one entry. '
+                      'Do NOT create a separate experience object for a "Client:" or "Defect Management Tool:" line — '
+                      'those belong in description[] of the contract role. '
+                      'Employer/company is the staffing firm or employer on the header; client names go in bullets only. '
                       'Put spoken languages under Languages ONLY if the resume explicitly contains a Languages / '
                       'Language Skills section. Do NOT infer or guess languages. '
                       'Each string is the language name, '
@@ -2419,8 +2762,7 @@ class AIResumeParser {
       return true;
     }).toList();
 
-    // De-dupe only true duplicates (same role, employer, and date range).
-    // Same company with different titles or dates must stay as separate rows.
+    // Exact triple duplicates only; fuzzy merge happens in [_consolidateExperiences].
     final seen = <String>{};
     data.experiences = data.experiences.where((e) {
       final key =
@@ -2469,7 +2811,332 @@ class AIResumeParser {
         })
         .toList();
 
+    data.experiences =
+        data.experiences.map(_normalizeExperienceRow).toList();
+
+    _foldSkillCategoryBucketsIntoSkills(data);
+    _consolidateExperiences(data);
+    data.experiences =
+        data.experiences.map(_normalizeExperienceRow).toList();
     _stripCategoryUiNoise(data);
+  }
+
+  /// Merges Frameworks / Cloud buckets into [data.skills] so the editor skills
+  /// section and template preview stay in sync after PDF import.
+  static void _foldSkillCategoryBucketsIntoSkills(ResumeData data) {
+    const buckets = <String>[
+      'Frameworks',
+      'Cloud/Databases/Tech-Stack',
+      'Cloud',
+      'Databases',
+    ];
+    final seen = <String>{
+      for (final s in data.skills)
+        s.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' '),
+    };
+    void addToken(String raw) {
+      final t = raw.trim();
+      if (t.isEmpty || t.length > 96) return;
+      final norm = t.toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+      if (seen.contains(norm)) return;
+      seen.add(norm);
+      data.skills.add(t);
+    }
+
+    for (final k in buckets) {
+      for (final raw in data.categories[k] ?? const <String>[]) {
+        final t = raw.trim();
+        if (t.isEmpty) continue;
+        if (t.contains(',') || t.contains(';')) {
+          for (final part in t.split(RegExp(r'[,;]'))) {
+            addToken(part);
+          }
+        } else {
+          addToken(t);
+        }
+      }
+    }
+  }
+
+  static String _normToken(String s) =>
+      s.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+
+  static String _normCompanyKey(String company) {
+    var c = _normToken(company);
+    c = c.replaceAll(
+      RegExp(
+        r'\b(incorporated|inc|corp|corporation|ltd|limited|pvt|private|llc|plc)\b\.?',
+      ),
+      '',
+    );
+    c = c.replaceAll(RegExp(r'[^a-z0-9]'), '');
+    return c;
+  }
+
+  static String _normRoleKey(String role) =>
+      role.trim().toLowerCase().replaceAll(RegExp(r'[^a-z0-9 ]'), '').replaceAll(
+            RegExp(r'\s+'),
+            ' ',
+          );
+
+  static bool _sameEmployer(String a, String b) {
+    final x = _normCompanyKey(a);
+    final y = _normCompanyKey(b);
+    if (x.isEmpty && y.isEmpty) return true;
+    if (x.isEmpty || y.isEmpty) return false;
+    if (x == y) return true;
+    if (x.length >= 5 &&
+        y.length >= 5 &&
+        (x.contains(y) || y.contains(x))) {
+      return true;
+    }
+    return false;
+  }
+
+  static bool _sameExperienceRow(Experience a, Experience b) {
+    if (!_rolesOverlap(a.role, b.role) &&
+        _normRoleKey(a.role) != _normRoleKey(b.role)) {
+      return false;
+    }
+    if (!_sameEmployer(a.company, b.company)) return false;
+    final da = a.duration.trim();
+    final db = b.duration.trim();
+    // Same title + employer but different date ranges = separate contracts.
+    if (da.isNotEmpty && db.isNotEmpty && !_normalizedDurationsEqual(da, db)) {
+      return false;
+    }
+    return true;
+  }
+
+  /// Whether heuristic and model rows describe the same job (for merge, not drop).
+  static bool _experiencesLikelySame(Experience a, Experience b) {
+    if (_sameExperienceRow(a, b)) return true;
+    final ra = _normRoleKey(a.role);
+    final rb = _normRoleKey(b.role);
+    if (ra.isEmpty || rb.isEmpty) return false;
+    if (ra != rb && !_rolesOverlap(a.role, b.role)) return false;
+
+    final employerMatch = _sameEmployer(a.company, b.company);
+    final clientMatch = _experienceListsClient(
+          a,
+          _employerNameForMatch(b.company),
+        ) ||
+        _experienceListsClient(b, _employerNameForMatch(a.company));
+    if (!employerMatch && !clientMatch) return false;
+
+    final da = a.duration.trim();
+    final db = b.duration.trim();
+    if (da.isNotEmpty && db.isNotEmpty && !_normalizedDurationsEqual(da, db)) {
+      return false;
+    }
+    return true;
+  }
+
+  /// Strips a leading `Client:` prefix so employer matching works on real names.
+  static String _employerNameForMatch(String company) {
+    var c = company.trim();
+    c = c.replaceFirst(
+      RegExp(r'^client\s*:?\s*', caseSensitive: false),
+      '',
+    );
+    return c.trim();
+  }
+
+  static bool _looksLikeMisreadExperienceHeader(String line) {
+    final t = line.trim();
+    if (t.isEmpty) return true;
+    if (ExperienceDisplay.looksLikeMetaLine(t) ||
+        ExperienceDisplay.looksLikeResponsibilitiesHeading(t)) {
+      return true;
+    }
+    final low = t.toLowerCase();
+    if (RegExp(r'\bclient\s*:').hasMatch(low)) return true;
+    // e.g. "Tester Client Marriott" from a wrapped Client: line
+    if (RegExp(r'\bclient\s+[a-z]', caseSensitive: false).hasMatch(t) &&
+        !RegExp(
+          r'\b(engineer|analyst|manager|developer|architect|consultant|lead|director)\b',
+          caseSensitive: false,
+        ).hasMatch(low)) {
+      return true;
+    }
+    return false;
+  }
+
+  static bool _isClientOnlyExperienceRow(Experience e) {
+    final company = e.company.trim();
+    if (company.isEmpty) return false;
+    return RegExp(r'^client\s*:?\s*', caseSensitive: false).hasMatch(company);
+  }
+
+  static bool _experienceListsClient(Experience e, String clientName) {
+    final key = _normCompanyKey(_employerNameForMatch(clientName));
+    if (key.isEmpty) return false;
+    for (final line in e.description) {
+      final t = line.trim();
+      if (!RegExp(r'^client\s*:?', caseSensitive: false).hasMatch(t)) {
+        continue;
+      }
+      final val = t.contains(':')
+          ? t.split(':').skip(1).join(':').trim()
+          : t.replaceFirst(RegExp(r'^client\s*:?\s*', caseSensitive: false), '');
+      final nk = _normCompanyKey(val);
+      if (nk.isEmpty) continue;
+      if (nk == key || nk.contains(key) || key.contains(nk)) return true;
+    }
+    return false;
+  }
+
+  static bool _rolesOverlap(String a, String b) {
+    final ra = _normRoleKey(a);
+    final rb = _normRoleKey(b);
+    if (ra.isEmpty || rb.isEmpty) return false;
+    if (ra == rb) return true;
+    final short = ra.length <= rb.length ? ra : rb;
+    final long = ra.length > rb.length ? ra : rb;
+    if (short.length >= 6 && long.contains(short)) return true;
+    final shortTokens =
+        short.split(' ').where((w) => w.length > 3).toSet();
+    final longTokens =
+        long.split(' ').where((w) => w.length > 3).toSet();
+    return shortTokens.isNotEmpty && shortTokens.every(longTokens.contains);
+  }
+
+  /// Mis-parsed client/meta stubs only — not real undated jobs with content.
+  static bool _isGhostExperienceCandidate(
+    Experience e,
+    List<Experience> all,
+  ) {
+    if (e.duration.trim().isNotEmpty) return false;
+    if (_isClientOnlyExperienceRow(e)) return true;
+
+    final hasRealBullets = e.description.any((b) {
+      final t = b.trim();
+      if (t.isEmpty) return false;
+      if (ExperienceDisplay.looksLikeMetaLine(t) ||
+          ExperienceDisplay.looksLikeResponsibilitiesHeading(t)) {
+        return false;
+      }
+      if (_isStandaloneExperienceDurationLine(t)) return false;
+      return t.length > 12;
+    });
+    if (hasRealBullets) return false;
+
+    final employer = _employerNameForMatch(e.company);
+    if (employer.isEmpty) return false;
+
+    for (final other in all) {
+      if (identical(other, e)) continue;
+      if (other.duration.trim().isEmpty) continue;
+      if (_experienceListsClient(other, employer)) return true;
+      if (_sameEmployer(_employerNameForMatch(other.company), employer) &&
+          _rolesOverlap(e.role, other.role)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Best row to absorb a duplicate / client-line job into (prefer dated, fuller jobs).
+  static int _findHostForGhostExperience(
+    Experience ghost,
+    List<Experience> hosts,
+  ) {
+    final employer = _employerNameForMatch(ghost.company);
+    var bestIdx = -1;
+    var bestScore = 0;
+    for (var i = 0; i < hosts.length; i++) {
+      final p = hosts[i];
+      if (identical(p, ghost)) continue;
+      var score = 0;
+      if (p.duration.trim().isNotEmpty) score += 100;
+      score += p.description.length * 4;
+      score += math.min(p.role.length, 80);
+      final hostEmployer = _employerNameForMatch(p.company);
+      if (employer.isNotEmpty &&
+          hostEmployer.isNotEmpty &&
+          _sameEmployer(hostEmployer, employer)) {
+        score += 60;
+      }
+      if (employer.isNotEmpty && _experienceListsClient(p, employer)) {
+        score += 55;
+      }
+      if (_rolesOverlap(ghost.role, p.role)) score += 25;
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+    return bestScore >= 55 ? bestIdx : -1;
+  }
+
+  /// De-duplicates responsibility lines (exact and near-duplicate text).
+  static List<String> _dedupeBullets(List<String> bullets) {
+    final out = <String>[];
+    final seen = <String>[];
+    for (final raw in bullets) {
+      final b = raw.trim();
+      if (b.isEmpty) continue;
+      final norm = b.toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+      var duplicate = false;
+      for (final s in seen) {
+        if (s == norm) {
+          duplicate = true;
+          break;
+        }
+        if (norm.length >= 24 &&
+            s.length >= 24 &&
+            (s.contains(norm) || norm.contains(s))) {
+          duplicate = true;
+          break;
+        }
+      }
+      if (duplicate) continue;
+      seen.add(norm);
+      out.add(b);
+    }
+    return out;
+  }
+
+  static void _mergeIntoExperience(Experience target, Experience incoming) {
+    if (target.company.trim().isEmpty && incoming.company.trim().isNotEmpty) {
+      target.company = incoming.company.trim();
+    }
+    if (target.duration.trim().isEmpty && incoming.duration.trim().isNotEmpty) {
+      target.duration = incoming.duration.trim();
+    } else if (incoming.duration.trim().length > target.duration.trim().length) {
+      target.duration = incoming.duration.trim();
+    }
+    target.description =
+        _dedupeBullets([...target.description, ...incoming.description]);
+  }
+
+  /// Merges duplicate jobs from PDF import (OpenAI + heuristics, different dates).
+  static void _consolidateExperiences(ResumeData data) {
+    if (data.experiences.isEmpty) return;
+    if (data.experiences.length == 1) {
+      data.experiences.first.description =
+          _dedupeBullets(data.experiences.first.description);
+      return;
+    }
+    final out = <Experience>[];
+    for (final e in data.experiences) {
+      final idx = out.indexWhere((x) => _sameExperienceRow(x, e));
+      if (idx < 0) {
+        out.add(
+          Experience(
+            role: e.role.trim(),
+            company: e.company.trim(),
+            duration: e.duration.trim(),
+            description: _dedupeBullets(e.description),
+          ),
+        );
+      } else {
+        _mergeIntoExperience(out[idx], e);
+      }
+    }
+    data.experiences = out
+        .where((e) => !_isClientOnlyExperienceRow(e))
+        .toList();
   }
 
   static void _sanitizeStructuredCategoryLists(ResumeData data) {

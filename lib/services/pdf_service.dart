@@ -13,6 +13,7 @@ import 'package:share_plus/share_plus.dart';
 import '../models/resume_model.dart';
 import '../utils/category_entry_display.dart';
 import '../utils/pdf_export_ats_markers.dart';
+import '../utils/resume_typography_sizes.dart';
 
 /// A resume PDF written to a temp file, ready for share or in-app print.
 typedef ResumePdfExport = ({File file, String displayName});
@@ -274,7 +275,7 @@ class PdfService {
       pw.Text(
         'APPLYING TOWARD THIS ROLE',
         style: pw.TextStyle(
-          fontSize: 8,
+          fontSize: ResumeTypographySizes.heading,
           fontWeight: pw.FontWeight.bold,
           letterSpacing: 0.55,
           color: PdfColors.grey700,
@@ -283,7 +284,10 @@ class PdfService {
       pw.SizedBox(height: 4),
       pw.Text(
         _jdSnippet(jdClean, maxChars),
-        style: const pw.TextStyle(fontSize: 9, lineSpacing: 1.15),
+        style: const pw.TextStyle(
+          fontSize: ResumeTypographySizes.body,
+          lineSpacing: 1.15,
+        ),
       ),
     ];
   }
@@ -409,7 +413,7 @@ class PdfService {
                       pw.Text(
                         _sanitizeTextForPdf(data.name),
                         style: pw.TextStyle(
-                          fontSize: 24,
+                          fontSize: ResumeTypographySizes.name,
                           fontWeight: pw.FontWeight.bold,
                         ),
                       ),
@@ -452,7 +456,9 @@ class PdfService {
                                 ),
                                 pw.Text(
                                   _sanitizeTextForPdf(e.duration),
-                                  style: const pw.TextStyle(fontSize: 10),
+                                  style: const pw.TextStyle(
+                                    fontSize: ResumeTypographySizes.body,
+                                  ),
                                 ),
                               ],
                             ),
@@ -509,9 +515,11 @@ class PdfService {
     final displayName = '$base.pdf';
 
     final pdf = pw.Document();
-    for (final png in pagePngBytes) {
-      final normalized = await _normalizePreviewPngToA4(png);
+    final atsPlain = _resumePlainTextForAts(data);
+    for (var pageIndex = 0; pageIndex < pagePngBytes.length; pageIndex++) {
+      final normalized = await _normalizePreviewPngToA4(pagePngBytes[pageIndex]);
       final img = pw.MemoryImage(normalized);
+      final embedAtsOnPage = pageIndex == 0 && atsPlain.trim().isNotEmpty;
       pdf.addPage(
         pw.Page(
           pageFormat: styledTemplateExportPageFormat,
@@ -524,6 +532,21 @@ class PdfService {
               fit: pw.StackFit.expand,
               children: [
                 pw.Container(color: PdfColors.white),
+                // Machine-readable layer for ATS checker / re-import (invisible on print).
+                if (embedAtsOnPage)
+                  pw.Positioned(
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    child: pw.Text(
+                      atsPlain,
+                      style: const pw.TextStyle(
+                        fontSize: 7,
+                        color: PdfColors.white,
+                        lineSpacing: 1.15,
+                      ),
+                    ),
+                  ),
                 pw.Positioned.fill(
                   child: pw.Image(img, fit: pw.BoxFit.cover),
                 ),
@@ -670,7 +693,7 @@ class PdfService {
       child: pw.Text(
         text,
         style: pw.TextStyle(
-          fontSize: 14,
+          fontSize: ResumeTypographySizes.heading,
           fontWeight: pw.FontWeight.bold,
         ),
       ),
@@ -683,7 +706,7 @@ class PdfService {
       style: pw.TextStyle(
         color: PdfColors.white,
         fontWeight: pw.FontWeight.bold,
-        fontSize: 12,
+        fontSize: ResumeTypographySizes.heading,
       ),
     );
   }
@@ -694,7 +717,10 @@ class PdfService {
       padding: const pw.EdgeInsets.only(bottom: 4),
       child: pw.Text(
         t,
-        style: const pw.TextStyle(color: PdfColors.white, fontSize: 10),
+        style: const pw.TextStyle(
+          color: PdfColors.white,
+          fontSize: ResumeTypographySizes.body,
+        ),
       ),
     );
   }
@@ -718,7 +744,7 @@ class PdfService {
             line,
             style: const pw.TextStyle(
               color: PdfColors.white,
-              fontSize: 10,
+              fontSize: ResumeTypographySizes.body,
               decoration: pw.TextDecoration.underline,
             ),
           ),
@@ -729,7 +755,10 @@ class PdfService {
       padding: const pw.EdgeInsets.only(bottom: 6),
       child: pw.Text(
         line,
-        style: const pw.TextStyle(color: PdfColors.white, fontSize: 10),
+        style: const pw.TextStyle(
+          color: PdfColors.white,
+          fontSize: ResumeTypographySizes.body,
+        ),
       ),
     );
   }
@@ -788,7 +817,10 @@ class PdfService {
       crossAxisAlignment: pw.CrossAxisAlignment.start,
       children: [
         pw.Text(s,
-            style: const pw.TextStyle(color: PdfColors.white, fontSize: 10)),
+            style: const pw.TextStyle(
+              color: PdfColors.white,
+              fontSize: ResumeTypographySizes.body,
+            )),
         pw.SizedBox(height: 3),
         pw.Stack(
           children: [
@@ -922,7 +954,7 @@ class PdfService {
           // Use a SpanningWidget so long resumes flow across pages.
           pw.Paragraph(
             text: safeText,
-            style: const pw.TextStyle(fontSize: 11),
+            style: const pw.TextStyle(fontSize: ResumeTypographySizes.body),
           ),
         ],
       ),

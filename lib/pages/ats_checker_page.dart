@@ -141,8 +141,12 @@ class _ATSCheckerPageState extends State<ATSCheckerPage> {
       // ✅ CALL YOUR EXISTING AI SERVICE
       final res = await AIATSService.checkATS(resumeFile!);
       final extractedRaw = await AIATSService.extractResumeText(resumeFile!);
-      final extractedForUi =
+      var extractedForUi =
           PdfExportAtsMarkers.stripEmbeddedMachineText(extractedRaw);
+      if (extractedForUi.trim().isEmpty) {
+        extractedForUi =
+            PdfExportAtsMarkers.extractEmbeddedMachineText(extractedRaw);
+      }
 
       if (!mounted) return;
       final scoreNum = (res['score'] as num?)?.toDouble() ?? 0;

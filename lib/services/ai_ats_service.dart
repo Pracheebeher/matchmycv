@@ -54,11 +54,13 @@ class AIATSService {
         };
       }
 
-      // Prefer analyzing human-visible text, but fall back to the raw extraction if
-      // stripping removes everything (styled exports may only have the embedded layer).
+      // Styled template PDFs are mostly PNG pages; readable content lives in the
+      // embedded ATS layer between [PdfExportAtsMarkers] (see [PdfService] export).
       var text = PdfExportAtsMarkers.stripEmbeddedMachineText(rawText);
       if (text.trim().isEmpty) {
-        text = rawText;
+        final embedded =
+            PdfExportAtsMarkers.extractEmbeddedMachineText(rawText).trim();
+        text = embedded.isNotEmpty ? embedded : rawText;
       }
 
       const maxChars = 48000;

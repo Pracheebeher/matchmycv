@@ -8,8 +8,13 @@ import 'package:flutter/rendering.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/resume_model.dart';
+import '../services/ai_resume_parser.dart';
 import '../services/resume_layout_engine.dart';
 import '../utils/resume_theme.dart';
+import '../utils/resume_typography.dart';
+import '../utils/experience_display.dart';
+import '../utils/resume_preview_layout_metrics.dart';
+import '../utils/template1_layout_metrics.dart';
 import '../utils/category_entry_display.dart';
 import '../l10n/app_localizations.dart';
 import '../widgets/paste_input_extras.dart';
@@ -22,6 +27,38 @@ import '../widgets/resume_pdf_post_export_sheet.dart';
 
 /// Matches [TemplateSelectionPage] template id `"2"` (`thumb` field).
 const String _template2SelectionThumbAsset = 'assets/templates/template2.png';
+
+/// Fixed banner slot on template-1 page 1 (must match pagination reserve).
+const double _kTemplate1BannerHeight = 108.0;
+
+/// Tracks work-experience progress across template-1 pages (jobs flow continuously).
+class _T1ExperiencePageState {
+  int jobIndex = 0;
+  int bulletIndex = 0;
+  bool showWorkHeading = true;
+}
+
+class _T1ExperienceFillResult {
+  final List<Experience> items;
+  final int endJobIndex;
+  final int endBulletIndex;
+  final bool showWorkHeadingOnPage;
+  final bool showWorkHeadingAfter;
+  final bool singleItemShowJobHeader;
+  final bool allExperienceComplete;
+  final double measuredHeight;
+
+  const _T1ExperienceFillResult({
+    required this.items,
+    required this.endJobIndex,
+    required this.endBulletIndex,
+    required this.showWorkHeadingOnPage,
+    required this.showWorkHeadingAfter,
+    required this.singleItemShowJobHeader,
+    required this.allExperienceComplete,
+    required this.measuredHeight,
+  });
+}
 
 /// Splits comma/semicolon-separated skill dumps for readable chips in template 1.
 List<String> _splitSkillListValue(String raw) {
@@ -50,6 +87,33 @@ String _resumeGeoDisplayLine(ResumeData data) {
     return '$city, $country';
   }
   return _firstCategoryLine(data, 'Location');
+}
+
+String _experienceWhenDisplay(Experience exp) {
+  return AIResumeParser.formatExperienceDurationDisplay(
+    exp.duration.trim().isNotEmpty
+        ? exp.duration
+        : (AIResumeParser.experiencePeriodFromFreeText(
+              '${exp.role} ${exp.company}',
+            ) ??
+            ''),
+  );
+}
+
+List<String> _experienceBulletsDisplay(Experience exp) {
+  final when = _experienceWhenDisplay(exp);
+  return AIResumeParser.stripDuplicateDurationBullets(
+    exp.description.map((b) => b.trim()).where((b) => b.isNotEmpty).toList(),
+    when.isNotEmpty ? when : exp.duration,
+  );
+}
+
+String _experienceCompanyDisplay(Experience exp) {
+  final when = _experienceWhenDisplay(exp);
+  return AIResumeParser.companyForExperienceDisplay(
+    exp.company,
+    when.isNotEmpty ? when : exp.duration,
+  );
 }
 
 class ResumePreviewPage extends StatefulWidget {
@@ -235,7 +299,7 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
                         style: TextStyle(
                           color: Colors.white.withOpacity(0.78),
                           height: 1.35,
-                          fontSize: 13,
+                          fontSize: ResumeTypography.heading,
                         ),
                       ),
                       const SizedBox(height: 16),
@@ -244,7 +308,7 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
                         style: TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.w800,
-                          fontSize: 13,
+                          fontSize: ResumeTypography.heading,
                         ),
                       ),
                       const SizedBox(height: 6),
@@ -253,7 +317,7 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
                         style: TextStyle(
                           color: Colors.white.withOpacity(0.86),
                           height: 1.35,
-                          fontSize: 13,
+                          fontSize: ResumeTypography.heading,
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -283,7 +347,7 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
                         style: TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.w800,
-                          fontSize: 13,
+                          fontSize: ResumeTypography.heading,
                         ),
                       ),
                       const SizedBox(height: 6),
@@ -294,7 +358,7 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
                         style: TextStyle(
                           color: Colors.white.withOpacity(0.86),
                           height: 1.35,
-                          fontSize: 13,
+                          fontSize: ResumeTypography.heading,
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -335,6 +399,7 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
   @override
   void initState() {
     super.initState();
+    AIResumeParser.sanitizeExtractedData(widget.data);
     _t2HeaderColor = _t2HeaderPresets.first;
     _t2GoldColor = _t2GoldPresets.first;
     // For Template 1, default to the first curated swatch (user requested "second color first").
@@ -390,7 +455,7 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
   Widget _themePanel(BuildContext context) {
     const labelStyle = TextStyle(
       color: Colors.white70,
-      fontSize: 10,
+      fontSize: ResumeTypography.body,
       fontWeight: FontWeight.w700,
     );
     const ddDecoration = InputDecoration(
@@ -514,7 +579,7 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
                         dropdownColor: const Color(0xFF0B1220),
                         style: const TextStyle(
                           color: Colors.white,
-                          fontSize: 11,
+                          fontSize: ResumeTypography.body,
                           fontWeight: FontWeight.w600,
                         ),
                         decoration: ddDecoration.copyWith(
@@ -534,15 +599,15 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
                         items: const [
                           DropdownMenuItem(
                             value: 'Georgia',
-                            child: Text('Georgia', style: TextStyle(color: Colors.white, fontSize: 11)),
+                            child: Text('Georgia', style: TextStyle(color: Colors.white, fontSize: ResumeTypography.body)),
                           ),
                           DropdownMenuItem(
                             value: 'Times New Roman',
-                            child: Text('Times', style: TextStyle(color: Colors.white, fontSize: 11)),
+                            child: Text('Times', style: TextStyle(color: Colors.white, fontSize: ResumeTypography.body)),
                           ),
                           DropdownMenuItem(
                             value: 'Palatino',
-                            child: Text('Palatino', style: TextStyle(color: Colors.white, fontSize: 11)),
+                            child: Text('Palatino', style: TextStyle(color: Colors.white, fontSize: ResumeTypography.body)),
                           ),
                         ],
                         onChanged: (v) {
@@ -560,7 +625,7 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
                         dropdownColor: const Color(0xFF0B1220),
                         style: const TextStyle(
                           color: Colors.white,
-                          fontSize: 11,
+                          fontSize: ResumeTypography.body,
                           fontWeight: FontWeight.w600,
                         ),
                         decoration: ddDecoration.copyWith(
@@ -580,15 +645,15 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
                         items: const [
                           DropdownMenuItem(
                             value: 'Roboto',
-                            child: Text('Roboto', style: TextStyle(color: Colors.white, fontSize: 11)),
+                            child: Text('Roboto', style: TextStyle(color: Colors.white, fontSize: ResumeTypography.body)),
                           ),
                           DropdownMenuItem(
                             value: 'Helvetica',
-                            child: Text('Helvetica', style: TextStyle(color: Colors.white, fontSize: 11)),
+                            child: Text('Helvetica', style: TextStyle(color: Colors.white, fontSize: ResumeTypography.body)),
                           ),
                           DropdownMenuItem(
                             value: 'Arial',
-                            child: Text('Arial', style: TextStyle(color: Colors.white, fontSize: 11)),
+                            child: Text('Arial', style: TextStyle(color: Colors.white, fontSize: ResumeTypography.body)),
                           ),
                         ],
                         onChanged: (v) {
@@ -700,7 +765,7 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
                                       style: TextStyle(
                                         color: Colors.white.withOpacity(0.94),
                                         fontWeight: FontWeight.w700,
-                                        fontSize: 14,
+                                        fontSize: ResumeTypography.heading,
                                         height: 1.35,
                                       ),
                                     ),
@@ -949,7 +1014,7 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
                           style: const TextStyle(
                             color: Colors.white,
                             fontWeight: FontWeight.w900,
-                            fontSize: 13.0,
+                            fontSize: ResumeTypography.heading,
                             height: 1.1,
                             letterSpacing: 0.1,
                           ),
@@ -962,7 +1027,7 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
                           style: TextStyle(
                             color: Colors.white.withOpacity(0.72),
                             fontWeight: FontWeight.w600,
-                            fontSize: 11.0,
+                            fontSize: ResumeTypography.body,
                             height: 1.2,
                           ),
                         ),
@@ -1111,7 +1176,7 @@ class _ResumePreviewPageState extends State<ResumePreviewPage> {
                                     style: const TextStyle(
                                       color: Color(0xFFE2E8F0),
                                       fontWeight: FontWeight.w900,
-                                      fontSize: 14,
+                                      fontSize: ResumeTypography.heading,
                                       letterSpacing: 0.2,
                                     ),
                                   ),
@@ -1239,12 +1304,17 @@ class _ResumePreviewBody extends StatelessWidget {
           final rightWidth = isSingleColumn
               ? math.max(120.0, paperWidth - 26 * 2)
               : math.max(120.0, paperWidth - sidebarWidth - 26 * 2);
+          final t1BannerHeight = templateId == '1'
+              ? _measureTemplate1BannerHeight(paperWidth)
+              : _kTemplate1BannerHeight;
           final pages = _paginate(
             layout,
             pageHeight: pageHeight,
             rightWidth: rightWidth,
             templateId: templateId,
             l10n: AppLocalizations.of(context),
+            bodyFontFamily: _bodyFf,
+            template1BannerHeight: t1BannerHeight,
           );
 
           final keysOk = exportPageBoundaryKeys != null &&
@@ -1258,9 +1328,13 @@ class _ResumePreviewBody extends StatelessWidget {
           }
           final keys = keysOk ? exportPageBoundaryKeys! : null;
 
-          final mainContentPadding = templateId == "2"
-              ? const EdgeInsets.fromLTRB(30, 26, 30, 22)
-              : const EdgeInsets.fromLTRB(26, 26, 26, 26);
+          final mainContentPadding = switch (templateId) {
+            "2" => const EdgeInsets.fromLTRB(30, 26, 30, 22),
+            "4" => const EdgeInsets.fromLTRB(28, 22, 28, 24),
+            "7" => const EdgeInsets.fromLTRB(26, 10, 26, 24),
+            "8" => const EdgeInsets.fromLTRB(24, 20, 24, 24),
+            _ => const EdgeInsets.fromLTRB(26, 26, 26, 26),
+          };
 
           List<Widget> mainColumnChildren(int i) {
             return <Widget>[
@@ -1339,7 +1413,7 @@ class _ResumePreviewBody extends StatelessWidget {
                                                   children: [
                                                     if (i == 0)
                                                       SizedBox(
-                                                        height: 100.0,
+                                                        height: t1BannerHeight,
                                                         child:
                                                             _template1TopBanner(
                                                           accent,
@@ -1348,7 +1422,9 @@ class _ResumePreviewBody extends StatelessWidget {
                                                     SizedBox(
                                                       height: pageHeight -
                                                           pageFooterBar -
-                                                          (i == 0 ? 100.0 : 0),
+                                                          (i == 0
+                                                              ? t1BannerHeight
+                                                              : 0),
                                                       child: Padding(
                                                         padding:
                                                             i == 0
@@ -1365,7 +1441,7 @@ class _ResumePreviewBody extends StatelessWidget {
                                                               // on the left with empty white on the right (preview + PDF PNG).
                                                               return SingleChildScrollView(
                                                                 physics:
-                                                                    const ClampingScrollPhysics(),
+                                                                    const NeverScrollableScrollPhysics(),
                                                                 child: SizedBox(
                                                                   width: c.maxWidth,
                                                                   child: Column(
@@ -1396,7 +1472,7 @@ class _ResumePreviewBody extends StatelessWidget {
                                                             pages.length,
                                                           ),
                                                           style: TextStyle(
-                                                            fontSize: 9.5,
+                                                            fontSize: ResumeTypography.body,
                                                             color: Colors.grey
                                                                 .shade600,
                                                           ),
@@ -1452,9 +1528,9 @@ class _ResumePreviewBody extends StatelessWidget {
                                                                 // preview scroll and feels broken; pagination should bound content.
                                                                 return SingleChildScrollView(
                                                                   physics: templateId ==
-                                                                          "2"
-                                                                      ? const NeverScrollableScrollPhysics()
-                                                                      : const ClampingScrollPhysics(),
+                                                                          "1"
+                                                                      ? const ClampingScrollPhysics()
+                                                                      : const NeverScrollableScrollPhysics(),
                                                                   padding:
                                                                       EdgeInsets.zero,
                                                                   child: SizedBox(
@@ -1511,7 +1587,7 @@ class _ResumePreviewBody extends StatelessWidget {
                                                             pages.length,
                                                           ),
                                                           style: TextStyle(
-                                                            fontSize: 9.5,
+                                                            fontSize: ResumeTypography.body,
                                                             color: Colors.grey
                                                                 .shade600,
                                                           ),
@@ -1546,28 +1622,454 @@ class _ResumePreviewBody extends StatelessWidget {
       );
   }
 
-  /// Height model for one template-1 experience slice (must stay in sync with [_buildSection]).
+  /// Height model for one template-1 experience slice (uses same math as pagination).
   double _estimateTemplate1ExperienceSliceHeight({
+    required Experience exp,
     required bool showWorkHeading,
     required bool showJobHeader,
-    required int bulletCount,
-    bool includeTargetBanner = false,
+    required String bodyFontFamily,
+    double availableWidth = _PreviewMetrics.pageWidth - 52,
   }) {
-    var h = 0.0;
-    h += showWorkHeading ? 46 : 6;
-    h += showJobHeader ? 48 : 6;
-    if (includeTargetBanner) h += 44;
-    h += bulletCount * 14.9;
-    h += 12;
-    return h;
+    return Template1LayoutMetrics.sectionHeight(
+      {
+        'type': 'experience',
+        'items': <Experience>[exp],
+        't1_show_work_heading': showWorkHeading,
+        't1_show_job_header': showJobHeader,
+      },
+      contentWidth: availableWidth,
+      fontFamily: bodyFontFamily,
+    );
+  }
+
+  /// Splits multi-item list sections so pagination can place more on each page.
+  List<Map<String, dynamic>> _splitTemplate1ListSections(
+    List<Map<String, dynamic>> right,
+  ) {
+    const splittable = <String>{
+      'education',
+      'projects',
+      'courses',
+      'certifications',
+      'achievement',
+    };
+    const headingKey = 't1_show_section_heading';
+
+    final out = <Map<String, dynamic>>[];
+    for (final s in right) {
+      final type = s['type']?.toString() ?? '';
+      if (!splittable.contains(type)) {
+        out.add(s);
+        continue;
+      }
+      final items = (s['items'] as List?) ?? const [];
+      if (items.length <= 1) {
+        out.add(Map<String, dynamic>.from(s)..[headingKey] = true);
+        continue;
+      }
+      var showHeading = true;
+      for (final item in items) {
+        out.add({
+          ...Map<String, dynamic>.from(s),
+          'items': <dynamic>[item],
+          headingKey: showHeading,
+        });
+        showHeading = false;
+      }
+    }
+    return out;
+  }
+
+  double _template1StackedHeight(
+    List<Map<String, dynamic>> sections,
+    double contentWidth,
+    String bodyFontFamily,
+  ) {
+    return Template1LayoutMetrics.stackedSectionsHeight(
+      sections: sections,
+      contentWidth: contentWidth,
+      fontFamily: bodyFontFamily,
+    );
+  }
+
+  double _template1SectionHeight(
+    Map<String, dynamic> section,
+    double contentWidth,
+    String bodyFontFamily,
+  ) {
+    return Template1LayoutMetrics.sectionHeight(
+      section,
+      contentWidth: contentWidth,
+      fontFamily: bodyFontFamily,
+    );
+  }
+
+  bool _sameTemplate1Job(Experience a, Experience b) {
+    return a.role.trim() == b.role.trim() &&
+        a.company.trim() == b.company.trim() &&
+        a.duration.trim() == b.duration.trim();
+  }
+
+  List<Experience> _appendJobBulletsToPageItems(
+    List<Experience> pageItems,
+    Experience job,
+    List<String> bullets,
+    int from,
+    int to,
+  ) {
+    final chunk = bullets.sublist(from, to);
+    final out = List<Experience>.from(pageItems);
+    if (out.isNotEmpty && _sameTemplate1Job(out.last, job)) {
+      final merged = <String>[
+        ...out.last.description,
+        ...chunk,
+      ];
+      out[out.length - 1] = Experience(
+        role: job.role,
+        company: job.company,
+        duration: job.duration,
+        description: merged,
+      );
+    } else {
+      out.add(
+        Experience(
+          role: job.role,
+          company: job.company,
+          duration: job.duration,
+          description: chunk,
+        ),
+      );
+    }
+    return out;
+  }
+
+  Map<String, dynamic> _template1ExperienceSectionMap({
+    required List<Experience> items,
+    required bool showWorkHeading,
+    required bool singleItemShowJobHeader,
+  }) {
+    return {
+      'type': 'experience',
+      'items': items,
+      't1_show_work_heading': showWorkHeading,
+      't1_show_job_header': singleItemShowJobHeader,
+    };
+  }
+
+  double _measureExperienceSection(
+    List<Experience> items,
+    bool showWorkHeading,
+    bool showJobHeaders,
+    double contentWidth,
+    String bodyFontFamily,
+    String templateId,
+  ) {
+    if (templateId == '1') {
+      return Template1LayoutMetrics.sectionHeight(
+        _template1ExperienceSectionMap(
+          items: items,
+          showWorkHeading: showWorkHeading,
+          singleItemShowJobHeader: showJobHeaders,
+        ),
+        contentWidth: contentWidth,
+        fontFamily: bodyFontFamily,
+      );
+    }
+    return ResumePreviewLayoutMetrics.sectionHeight(
+      _template1ExperienceSectionMap(
+        items: items,
+        showWorkHeading: showWorkHeading,
+        singleItemShowJobHeader: showJobHeaders,
+      ),
+      contentWidth: contentWidth,
+      fontFamily: bodyFontFamily,
+      templateId: templateId,
+    );
+  }
+
+  bool _template1ShowJobHeadersForMeasure(List<Experience> items, int bulletFrom) {
+    return items.length > 1 || bulletFrom == 0;
+  }
+
+  /// Fills the current page with as much work history as fits — jobs continue on the
+  /// same page when space remains (no forced page break per role).
+  _T1ExperienceFillResult _fillExperienceForPage({
+    required List<Experience> jobs,
+    required int startJob,
+    required int startBullet,
+    required bool showWorkHeading,
+    required double maxHeight,
+    required double contentWidth,
+    required String bodyFontFamily,
+    required String templateId,
+  }) {
+    var ji = startJob;
+    var bi = startBullet;
+    var wh = showWorkHeading;
+    final pageItems = <Experience>[];
+
+    while (ji < jobs.length) {
+      final job = jobs[ji];
+      final bullets = job.description
+          .map((b) => b.trim())
+          .where((b) => b.isNotEmpty)
+          .toList();
+
+      if (bi >= bullets.length) {
+        ji++;
+        bi = 0;
+        continue;
+      }
+
+      if (bullets.isEmpty) {
+        final trial = List<Experience>.from(pageItems)..add(job);
+        final h = _measureExperienceSection(
+          trial,
+          wh,
+          _template1ShowJobHeadersForMeasure(trial, 0),
+          contentWidth,
+          bodyFontFamily,
+          templateId,
+        );
+        if (pageItems.isNotEmpty && h > maxHeight) break;
+        pageItems
+          ..clear()
+          ..addAll(trial);
+        ji++;
+        bi = 0;
+        wh = false;
+        if (h > maxHeight) break;
+        continue;
+      }
+
+      var bestEnd = bi;
+      for (var tryEnd = bi + 1; tryEnd <= bullets.length; tryEnd++) {
+        final trial = _appendJobBulletsToPageItems(
+          pageItems,
+          job,
+          bullets,
+          bi,
+          tryEnd,
+        );
+        final h = _measureExperienceSection(
+          trial,
+          wh,
+          _template1ShowJobHeadersForMeasure(trial, bi),
+          contentWidth,
+          bodyFontFamily,
+          templateId,
+        );
+        if (h <= maxHeight) {
+          bestEnd = tryEnd;
+        } else {
+          break;
+        }
+      }
+
+      if (bestEnd <= bi) {
+        if (pageItems.isEmpty && bi < bullets.length) {
+          final lone = _appendJobBulletsToPageItems(
+            pageItems,
+            job,
+            bullets,
+            bi,
+            bi + 1,
+          );
+          final loneH = _measureExperienceSection(
+            lone,
+            wh,
+            _template1ShowJobHeadersForMeasure(lone, bi),
+            contentWidth,
+            bodyFontFamily,
+            templateId,
+          );
+          if (loneH <= maxHeight) {
+            bestEnd = bi + 1;
+          } else {
+            break;
+          }
+        } else {
+          break;
+        }
+      }
+
+      final trial = _appendJobBulletsToPageItems(
+        pageItems,
+        job,
+        bullets,
+        bi,
+        bestEnd,
+      );
+      final trialH = _measureExperienceSection(
+        trial,
+        wh,
+        _template1ShowJobHeadersForMeasure(trial, bi),
+        contentWidth,
+        bodyFontFamily,
+        templateId,
+      );
+      if (pageItems.isNotEmpty && trialH > maxHeight) break;
+
+      pageItems
+        ..clear()
+        ..addAll(trial);
+      bi = bestEnd;
+      wh = false;
+
+      if (bi >= bullets.length) {
+        ji++;
+        bi = 0;
+        final usedNow = _measureExperienceSection(
+          pageItems,
+          showWorkHeading,
+          true,
+          contentWidth,
+          bodyFontFamily,
+          templateId,
+        );
+        if (usedNow >= maxHeight || ji >= jobs.length) {
+          break;
+        }
+        continue;
+      }
+      break;
+    }
+
+    if (pageItems.isEmpty) {
+      return _T1ExperienceFillResult(
+        items: const [],
+        endJobIndex: ji,
+        endBulletIndex: bi,
+        showWorkHeadingOnPage: showWorkHeading,
+        showWorkHeadingAfter: showWorkHeading,
+        singleItemShowJobHeader: true,
+        allExperienceComplete: ji >= jobs.length,
+        measuredHeight: 0,
+      );
+    }
+
+    final showWhOnPage = showWorkHeading;
+    final singleItemShowJobHeader =
+        pageItems.length > 1 || startBullet == 0;
+    final measured = _measureExperienceSection(
+      pageItems,
+      showWhOnPage,
+      singleItemShowJobHeader,
+      contentWidth,
+      bodyFontFamily,
+      templateId,
+    );
+
+    return _T1ExperienceFillResult(
+      items: pageItems,
+      endJobIndex: ji,
+      endBulletIndex: bi,
+      showWorkHeadingOnPage: showWhOnPage,
+      showWorkHeadingAfter: false,
+      singleItemShowJobHeader: singleItemShowJobHeader,
+      allExperienceComplete: ji >= jobs.length,
+      measuredHeight: measured,
+    );
+  }
+
+  /// Builds one page's main column; work experience continues across pages (templates 1 & 2).
+  ({List<Map<String, dynamic>> sections, int nextIndex}) _takeTemplatePageRightSections({
+    required List<Map<String, dynamic>> right,
+    required int startIndex,
+    required double availHeight,
+    required double contentWidth,
+    required String bodyFontFamily,
+    required _T1ExperiencePageState expState,
+    required String templateId,
+  }) {
+    final limit = templateId == '1'
+        ? availHeight - Template1LayoutMetrics.renderSafetyMargin
+        : availHeight -
+            ResumePreviewLayoutMetrics.renderSafetyMargin +
+            ResumePreviewLayoutMetrics.packBudgetFor(templateId);
+    final out = <Map<String, dynamic>>[];
+    var used = 0.0;
+    var i = startIndex;
+
+    while (i < right.length) {
+      final s = right[i];
+      if (s['type'] == 'experience') {
+        final jobs =
+            (s['items'] as List?)?.cast<Experience>() ?? const <Experience>[];
+        final remaining = limit - used;
+        if (remaining < 40) break;
+
+        final fill = _fillExperienceForPage(
+          jobs: jobs,
+          startJob: expState.jobIndex,
+          startBullet: expState.bulletIndex,
+          showWorkHeading: expState.showWorkHeading,
+          maxHeight: remaining,
+          contentWidth: contentWidth,
+          bodyFontFamily: bodyFontFamily,
+          templateId: templateId,
+        );
+
+        if (fill.items.isEmpty) break;
+
+        out.add(
+          _template1ExperienceSectionMap(
+            items: fill.items,
+            showWorkHeading: fill.showWorkHeadingOnPage,
+            singleItemShowJobHeader: fill.singleItemShowJobHeader,
+          ),
+        );
+
+        used += fill.measuredHeight;
+        expState.jobIndex = fill.endJobIndex;
+        expState.bulletIndex = fill.endBulletIndex;
+        expState.showWorkHeading = fill.showWorkHeadingAfter;
+
+        if (fill.allExperienceComplete) {
+          i++;
+        } else {
+          break;
+        }
+        continue;
+      }
+
+      final h = templateId == '1'
+          ? Template1LayoutMetrics.sectionHeight(
+              s,
+              contentWidth: contentWidth,
+              fontFamily: bodyFontFamily,
+            )
+          : ResumePreviewLayoutMetrics.sectionHeight(
+              s,
+              contentWidth: contentWidth,
+              fontFamily: bodyFontFamily,
+              templateId: templateId,
+            );
+      if (used + h > limit) break;
+      out.add(s);
+      used += h;
+      i++;
+    }
+
+    if (out.isEmpty && i < right.length) {
+      final s = right[i];
+      out.add(s);
+      i++;
+    }
+
+    return (sections: out, nextIndex: i);
   }
 
   /// Breaks large jobs into multiple [experience] sections so pagination can move overflow to the next page.
   List<Map<String, dynamic>> _expandTemplate1ExperienceSlices(
     List<Map<String, dynamic>> right,
-    double maxSliceHeight,
-  ) {
+    double maxFirstSliceHeight,
+    double maxContinuationSliceHeight, {
+    required String bodyFontFamily,
+    double availableWidth = _PreviewMetrics.pageWidth - 52,
+  }) {
     final out = <Map<String, dynamic>>[];
+    var firstExperienceSlice = true;
     for (final s in right) {
       if (s["type"] != "experience") {
         out.add(Map<String, dynamic>.from(s));
@@ -1600,6 +2102,7 @@ class _ResumePreviewBody extends StatelessWidget {
             jdAttached = true;
           }
           out.add(m);
+          firstExperienceSlice = false;
           showNextWorkHeading = false;
           continue;
         }
@@ -1607,19 +2110,26 @@ class _ResumePreviewBody extends StatelessWidget {
         var showJobHeader = true;
         var bi = 0;
         while (bi < bullets.length) {
+          final maxSliceHeight = firstExperienceSlice
+              ? maxFirstSliceHeight
+              : maxContinuationSliceHeight;
           var lo = bi + 1;
           var hi = bullets.length;
           var bestEnd = bi + 1;
           while (lo <= hi) {
             final mid = (lo + hi) ~/ 2;
-            final chunkLen = mid - bi;
-            final includeJd =
-                jdStr.isNotEmpty && showNextWorkHeading && !jdAttached;
+            final chunk = bullets.sublist(bi, mid);
             final est = _estimateTemplate1ExperienceSliceHeight(
+              exp: Experience(
+                role: e.role,
+                company: e.company,
+                duration: e.duration,
+                description: chunk,
+              ),
               showWorkHeading: showNextWorkHeading,
               showJobHeader: showJobHeader,
-              bulletCount: chunkLen,
-              includeTargetBanner: includeJd,
+              bodyFontFamily: bodyFontFamily,
+              availableWidth: availableWidth,
             );
             if (est <= maxSliceHeight) {
               bestEnd = mid;
@@ -1648,6 +2158,7 @@ class _ResumePreviewBody extends StatelessWidget {
             jdAttached = true;
           }
           out.add(m);
+          firstExperienceSlice = false;
           showNextWorkHeading = false;
           showJobHeader = false;
           bi = bestEnd;
@@ -1665,6 +2176,8 @@ class _ResumePreviewBody extends StatelessWidget {
     List<Map<String, dynamic>> right,
     double maxChunkHeight, {
     required String templateId,
+    required double contentWidth,
+    required String bodyFontFamily,
   }) {
     final out = <Map<String, dynamic>>[];
     for (final s in right) {
@@ -1682,19 +2195,31 @@ class _ResumePreviewBody extends StatelessWidget {
       final base = Map<String, dynamic>.from(s)..remove("target_jd");
       var jdAttached = false;
 
-      // Rough height model per job; tuned to match preview widgets (non-template-1).
       double jobH(Experience e) {
-        final n = e.description.where((b) => b.trim().isNotEmpty).length;
-        // role/company/dates row(s)
-        var h = 50.0;
-        // bullets
-        h += n * 18.0;
-        // spacing between jobs
-        h += 10.0;
-        return h;
+        return ResumePreviewLayoutMetrics.sectionHeight(
+          {
+            'type': 'experience',
+            'items': <Experience>[e],
+            't1_show_work_heading': false,
+            't1_show_job_header': true,
+          },
+          contentWidth: contentWidth,
+          fontFamily: bodyFontFamily,
+          templateId: templateId,
+        );
       }
 
-      const headingH = 54.0;
+      final headingH = ResumePreviewLayoutMetrics.sectionHeight(
+        {
+          'type': 'experience',
+          'items': const <Experience>[],
+          't1_show_work_heading': true,
+          't1_show_job_header': false,
+        },
+        contentWidth: contentWidth,
+        fontFamily: bodyFontFamily,
+        templateId: templateId,
+      );
       var buf = <Experience>[];
       var used = headingH;
 
@@ -1793,18 +2318,13 @@ class _ResumePreviewBody extends StatelessWidget {
             .where((b) => b.isNotEmpty)
             .toList();
 
-        String? intro;
-        var bulletLines = <String>[];
-        if (bullets.isNotEmpty) {
-          if (bullets.length >= 2 &&
-              (bullets.first.length > 140 ||
-                  bullets.first.contains('.'))) {
-            intro = bullets.first;
-            bulletLines = bullets.skip(1).toList();
-          } else {
-            bulletLines = bullets;
-          }
-        } else {
+        final split = ExperienceDisplay.splitIntroFromBullets(
+          bullets,
+          allowIntro: true,
+        );
+        var intro = split.intro;
+        var bulletLines = split.bullets;
+        if (bullets.isEmpty) {
           final m = <String, dynamic>{
             ...base,
             "type": "experience",
@@ -1887,12 +2407,95 @@ class _ResumePreviewBody extends StatelessWidget {
     return out;
   }
 
+  double _mainColumnAvailHeight({
+    required int pageIndex,
+    required String templateId,
+    required double pageHeight,
+    required double rightInnerHeight,
+    required double template1BannerHeight,
+  }) {
+    if (templateId == '1') {
+      return pageIndex == 0
+          ? _PreviewMetrics.template1Page1RightHeight(
+              pageHeight,
+              bannerHeight: template1BannerHeight,
+            )
+          : _PreviewMetrics.template1ContinuationRightHeight(pageHeight);
+    }
+    var h = rightInnerHeight;
+    if (pageIndex == 0) {
+      h -= ResumePreviewLayoutMetrics.page1MainHeaderReserve(templateId);
+    }
+    return h.clamp(120.0, rightInnerHeight);
+  }
+
+  double _measureTemplate1BannerHeight(double paperWidth) {
+    double paintH(String text, TextStyle style, double maxW, {int maxLines = 2}) {
+      final t = text.trim();
+      if (t.isEmpty) return 0;
+      final painter = TextPainter(
+        text: TextSpan(text: t, style: style),
+        textDirection: TextDirection.ltr,
+        maxLines: maxLines,
+      )..layout(maxWidth: maxW);
+      return painter.height;
+    }
+
+    const padV = 13.0 + 11.0;
+    var h = padV;
+    final innerW = paperWidth - 40;
+    final nameStyle = TextStyle(
+      fontFamily: _nameFf,
+      fontSize: ResumeTypography.name,
+      fontWeight: FontWeight.w900,
+      height: 1.08,
+    );
+    final roleStyle = TextStyle(
+      fontFamily: _bodyFf,
+      fontSize: ResumeTypography.body,
+      fontWeight: FontWeight.w700,
+      height: 1.2,
+    );
+    final name = data.name.trim().isNotEmpty ? data.name.trim() : 'Your Name';
+    h += paintH(name, nameStyle, innerW);
+    final role =
+        data.experiences.isNotEmpty ? data.experiences.first.role.trim() : '';
+    if (role.isNotEmpty) {
+      h += 5 + paintH(role, roleStyle, innerW, maxLines: 1);
+    }
+    h += 7;
+    final geo = _resumeGeoDisplayLine(data);
+    final contacts = <String>[
+      if (data.email.trim().isNotEmpty) data.email.trim(),
+      if (data.phone.trim().isNotEmpty) data.phone.trim(),
+      if (geo.isNotEmpty) geo,
+    ];
+    if (contacts.isNotEmpty) {
+      const rowH = ResumeTypography.body * 1.15 + 6;
+      var rowW = 0.0;
+      var rows = 1.0;
+      for (final c in contacts) {
+        final w = math.min(innerW * 0.92, c.length * 6.2 + 28);
+        if (rowW > 0 && rowW + 10 + w > innerW) {
+          rows += 1;
+          rowW = w;
+        } else {
+          rowW += rowW > 0 ? 10 + w : w;
+        }
+      }
+      h += rows * rowH + (rows - 1) * 5;
+    }
+    return h.clamp(_kTemplate1BannerHeight, 132.0);
+  }
+
   List<_ResumePreviewPageData> _paginate(
     List<Map<String, dynamic>> layout, {
     required double pageHeight,
     required double rightWidth,
     required String templateId,
     required AppLocalizations l10n,
+    String? bodyFontFamily,
+    double template1BannerHeight = _kTemplate1BannerHeight,
   }) {
     // Right content (sections)
     var right = layout
@@ -1939,6 +2542,7 @@ class _ResumePreviewBody extends StatelessWidget {
         "Databases",
         "Courses",
         "Certifications",
+        "References",
       },
       if (templateId == "2") ...{
         "References",
@@ -1986,31 +2590,26 @@ class _ResumePreviewBody extends StatelessWidget {
     // ListView as sections — reserve ~its height, not an oversized guess, or pages
     // under-pack and show large empty bands.
     // Must match the actual rendered Template 1 top banner height (see build).
-    const t1FirstPageHeaderReserve = 100.0;
-    const t1ContinuationReserve = 26.0;
-    const t1SliceSlack = 12.0;
+    final layoutFf = bodyFontFamily ?? 'Roboto';
 
     if (templateId == "1") {
-      // Split long jobs into slices that fit under the header + footer so bullets
-      // continue on the next page instead of clipping.
-      final maxExpSlice = math.max(
-        120.0,
-        rightInnerHeight - t1FirstPageHeaderReserve - t1SliceSlack,
+      right = _splitTemplate1ListSections(right);
+    } else if (templateId != "2") {
+      final firstPageMainH = _mainColumnAvailHeight(
+        pageIndex: 0,
+        templateId: templateId,
+        pageHeight: pageHeight,
+        rightInnerHeight: rightInnerHeight,
+        template1BannerHeight: template1BannerHeight,
       );
-      right = _expandTemplate1ExperienceSlices(right, maxExpSlice);
-    } else {
-      // Other templates: split very large experience sections by job so page 1
-      // doesn't become "SUMMARY only" when experience is long.
-      final maxChunk = math.max(180.0, rightInnerHeight - 32.0);
+      final maxChunk = math.max(160.0, firstPageMainH - 20.0);
       right = _expandExperienceJobChunks(
         right,
         maxChunk,
         templateId: templateId,
+        contentWidth: rightWidth,
+        bodyFontFamily: layoutFf,
       );
-      if (templateId == "2") {
-        final sliceH = math.max(160.0, rightInnerHeight - 48.0);
-        right = _expandTemplate2ExperienceBulletSlices(right, sliceH);
-      }
     }
 
     // Template 1 is full-width: skills/education/languages live in [right], not the
@@ -2018,6 +2617,8 @@ class _ResumePreviewBody extends StatelessWidget {
     // forever and this loop never terminates (OOM / Scudo "Lost connection").
     final singleColumn = templateId == "1";
     final packSidebar = !singleColumn;
+    final t1ExpState =
+        (templateId == "1" || templateId == "2") ? _T1ExperiencePageState() : null;
 
     while ((packSidebar && skillIndex < skills.length) ||
         (packSidebar && educationIndex < education.length) ||
@@ -2140,27 +2741,43 @@ class _ResumePreviewBody extends StatelessWidget {
         );
       }
 
-      // Template 1: page 1 needs a realistic header reserve (not too large or page 1
-      // looks empty). Continuation pages need extra pessimism or the packer puts one
-      // section too many and the preview column scrolls inside the card.
-      final rightAvailHeight = (pages.isEmpty && templateId == "1")
-          ? (rightInnerHeight - t1FirstPageHeaderReserve)
-              .clamp(96.0, rightInnerHeight)
-          : (templateId == "1"
-              ? (rightInnerHeight - t1ContinuationReserve)
-                  .clamp(96.0, rightInnerHeight)
-              : templateId == "2"
-                  ? (rightInnerHeight - 40.0).clamp(120.0, rightInnerHeight)
-                  : rightInnerHeight);
-      final rightCap = _PreviewMetrics.rightSectionCapacity(
-        availableHeight: rightAvailHeight,
-        availableWidth: rightWidth,
-        sections: right.sublist(rightIndex),
+      final rightAvailHeight = _mainColumnAvailHeight(
+        pageIndex: pages.length,
         templateId: templateId,
+        pageHeight: pageHeight,
+        rightInnerHeight: rightInnerHeight,
+        template1BannerHeight: template1BannerHeight,
       );
-      var takeRight = math.min(rightCap, right.length - rightIndex);
-      if (takeRight == 0 && rightIndex < right.length) {
-        takeRight = 1;
+      final layoutFont = bodyFontFamily ?? 'Roboto';
+      late final List<Map<String, dynamic>> pageRightSections;
+      late final int nextRightIndex;
+
+      if (templateId == "1" || templateId == "2") {
+        final taken = _takeTemplatePageRightSections(
+          right: right,
+          startIndex: rightIndex,
+          availHeight: rightAvailHeight,
+          contentWidth: rightWidth,
+          bodyFontFamily: layoutFont,
+          expState: t1ExpState!,
+          templateId: templateId,
+        );
+        pageRightSections = taken.sections;
+        nextRightIndex = taken.nextIndex;
+      } else {
+        final rightCap = ResumePreviewLayoutMetrics.fitSectionCount(
+          sections: right.sublist(rightIndex),
+          availHeight: rightAvailHeight,
+          contentWidth: rightWidth,
+          fontFamily: layoutFont,
+          templateId: templateId,
+        );
+        var takeRight = math.min(rightCap, right.length - rightIndex);
+        if (takeRight == 0 && rightIndex < right.length) {
+          takeRight = 1;
+        }
+        pageRightSections = right.sublist(rightIndex, rightIndex + takeRight);
+        nextRightIndex = rightIndex + takeRight;
       }
 
       pages.add(
@@ -2175,7 +2792,7 @@ class _ResumePreviewBody extends StatelessWidget {
               languages.sublist(languageIndex, languageIndex + takeLangs),
           otherLines:
               otherLines.sublist(otherIndex, otherIndex + takeOther),
-          rightSections: right.sublist(rightIndex, rightIndex + takeRight),
+          rightSections: pageRightSections,
         ),
       );
 
@@ -2183,7 +2800,7 @@ class _ResumePreviewBody extends StatelessWidget {
       educationIndex += takeEducation;
       languageIndex += takeLangs;
       otherIndex += takeOther;
-      rightIndex += takeRight;
+      rightIndex = nextRightIndex;
     }
 
     return pages;
@@ -2275,11 +2892,10 @@ class _ResumePreviewBody extends StatelessWidget {
             textAlign: TextAlign.center,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(
+            style: ResumeTypography.nameStyle(
+              _nameFf,
               color: style.sidebarOnColor,
-              fontSize: compact ? 15 : 16,
               height: 1.1,
-              fontWeight: FontWeight.w800,
             ),
           ),
           if (role.trim().isNotEmpty) ...[
@@ -2289,9 +2905,9 @@ class _ResumePreviewBody extends StatelessWidget {
               textAlign: TextAlign.center,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(
+              style: ResumeTypography.bodyStyle(
+                _bodyFf,
                 color: style.sidebarOnColor.withOpacity(0.8),
-                fontSize: compact ? 9.5 : 10,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -2463,12 +3079,12 @@ class _ResumePreviewBody extends StatelessWidget {
               Expanded(
                 child: Text(
                   text,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
+                  maxLines: 3,
+                  overflow: TextOverflow.visible,
                   style: TextStyle(
                     fontFamily: _bodyFf,
                     color: style.sidebarOnColor.withOpacity(0.92),
-                    fontSize: 8.35,
+                    fontSize: ResumeTypography.body,
                     height: 1.25,
                     decoration: uri == null ? null : TextDecoration.underline,
                   ),
@@ -2485,7 +3101,7 @@ class _ResumePreviewBody extends StatelessWidget {
           style: TextStyle(
             fontFamily: _bodyFf,
             color: style.sidebarOnColor.withOpacity(0.92),
-            fontSize: 9.75,
+            fontSize: ResumeTypography.heading,
             fontWeight: FontWeight.w800,
             letterSpacing: 2.2,
             height: 1.0,
@@ -2526,7 +3142,7 @@ class _ResumePreviewBody extends StatelessWidget {
                 style: TextStyle(
                   fontFamily: _bodyFf,
                   color: style.sidebarOnColor,
-                  fontSize: 8.85,
+                  fontSize: ResumeTypography.body,
                   fontWeight: FontWeight.w900,
                   letterSpacing: 0.6,
                   height: 1.15,
@@ -2539,7 +3155,7 @@ class _ResumePreviewBody extends StatelessWidget {
                 style: TextStyle(
                   fontFamily: _bodyFf,
                   color: style.sidebarOnColor.withOpacity(0.78),
-                  fontSize: 8.25,
+                  fontSize: ResumeTypography.body,
                   height: 1.25,
                 ),
               ),
@@ -2553,7 +3169,7 @@ class _ResumePreviewBody extends StatelessWidget {
                 style: TextStyle(
                   fontFamily: _bodyFf,
                   color: style.sidebarOnColor.withOpacity(0.78),
-                  fontSize: 8.25,
+                  fontSize: ResumeTypography.body,
                   height: 1.2,
                 ),
               ),
@@ -2565,7 +3181,7 @@ class _ResumePreviewBody extends StatelessWidget {
                 style: TextStyle(
                   fontFamily: _bodyFf,
                   color: style.sidebarOnColor.withOpacity(0.70),
-                  fontSize: 8.1,
+                  fontSize: ResumeTypography.body,
                   height: 1.1,
                 ),
               ),
@@ -2623,7 +3239,7 @@ class _ResumePreviewBody extends StatelessWidget {
                           style: TextStyle(
                             fontFamily: _bodyFf,
                             color: style.sidebarOnColor.withOpacity(0.92),
-                            fontSize: 8.35,
+                            fontSize: ResumeTypography.body,
                             height: 1.25,
                             decoration: TextDecoration.underline,
                           ),
@@ -2650,7 +3266,7 @@ class _ResumePreviewBody extends StatelessWidget {
                   style: TextStyle(
                     fontFamily: _bodyFf,
                     color: style.sidebarOnColor.withOpacity(0.88),
-                    fontSize: 8.35,
+                    fontSize: ResumeTypography.body,
                     height: 1.2,
                   ),
                 ),
@@ -2677,7 +3293,7 @@ class _ResumePreviewBody extends StatelessWidget {
                   style: TextStyle(
                     fontFamily: _bodyFf,
                     color: style.sidebarOnColor.withOpacity(0.86),
-                    fontSize: 8.25,
+                    fontSize: ResumeTypography.body,
                   ),
                 ),
               ),
@@ -2708,7 +3324,7 @@ class _ResumePreviewBody extends StatelessWidget {
             text,
             style: TextStyle(
               color: style.sidebarOnColor.withOpacity(0.9),
-              fontSize: 10,
+              fontSize: ResumeTypography.body,
               fontWeight: FontWeight.w900,
               letterSpacing: 1.8,
             ),
@@ -2814,10 +3430,19 @@ class _ResumePreviewBody extends StatelessWidget {
     required double sidebarWidth,
     required _TemplateStyle style,
   }) {
-    // Austin Bronson reference: left photo block + ABOUT ME + SKILLS bars.
+    // Austin Bronson reference: left photo + skill bars; ABOUT ME lives on the right column.
     final compact = sidebarWidth < 180;
     final photoH = compact ? 150.0 : 190.0;
     final showPhoto = page.showDetails;
+    const t4SidebarStyle = _TemplateStyle(
+      id: "4x",
+      sidebarGradient: null,
+      sidebarSolidColor: null,
+      sidebarOnColor: Color(0xFFEFEFEF),
+      accent: Color(0xFFF3C300),
+      titleStyle: _TitleStyle.underline,
+      sidebarPlacement: _SidebarPlacement.left,
+    );
 
     return Container(
       color: const Color(0xFF1C1C1C),
@@ -2836,53 +3461,30 @@ class _ResumePreviewBody extends StatelessWidget {
                   : Container(color: Colors.white.withOpacity(0.06)),
             ),
           Padding(
-            padding: EdgeInsets.fromLTRB(compact ? 12 : 16, 16, compact ? 12 : 16, 14),
+            padding: EdgeInsets.fromLTRB(
+              compact ? 14 : 18,
+              18,
+              compact ? 14 : 18,
+              16,
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  "ABOUT ME",
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.55),
-                    fontSize: 14,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 2.4,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                if (data.summary.trim().isNotEmpty)
+                if (page.skills.isNotEmpty) ...[
                   Text(
-                    data.summary.trim(),
-                    maxLines: null,
-                    overflow: TextOverflow.visible,
-                    style: TextStyle(
-                      color: Colors.white.withOpacity(0.7),
-                      fontSize: 9.5,
-                      height: 1.35,
+                    "SKILLS",
+                    style: ResumeTypography.headingStyle(
+                      _bodyFf,
+                      color: Colors.white.withOpacity(0.55),
+                      letterSpacing: 2.4,
                     ),
                   ),
-                const SizedBox(height: 18),
-                Text(
-                  "SKILLS",
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.55),
-                    fontSize: 14,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 2.4,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                for (final s in page.skills.take(8)) ...[
-                  _skillBar(s, const _TemplateStyle(
-                    id: "4x",
-                    sidebarGradient: null,
-                    sidebarSolidColor: null,
-                    sidebarOnColor: Color(0xFFEFEFEF),
-                    accent: Color(0xFFF3C300),
-                    titleStyle: _TitleStyle.underline,
-                    sidebarPlacement: _SidebarPlacement.left,
-                  )),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 12),
+                  for (final s in page.skills.take(10))
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: _skillBar(s, t4SidebarStyle, maxLabelLines: 2),
+                    ),
                 ],
               ],
             ),
@@ -2980,7 +3582,7 @@ class _ResumePreviewBody extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   color: style.sidebarOnColor.withOpacity(0.78),
-                  fontSize: 8.5,
+                  fontSize: ResumeTypography.body,
                   height: 1.25,
                   decoration: uri == null ? null : TextDecoration.underline,
                 ),
@@ -3002,7 +3604,7 @@ class _ResumePreviewBody extends StatelessWidget {
         overflow: TextOverflow.ellipsis,
         style: TextStyle(
           color: style.sidebarOnColor.withOpacity(0.82),
-          fontSize: 9.25,
+          fontSize: ResumeTypography.body,
           height: 1.1,
         ),
       ),
@@ -3152,7 +3754,7 @@ class _ResumePreviewBody extends StatelessWidget {
               t,
               style: TextStyle(
                 color: Colors.white.withOpacity(0.9),
-                fontSize: 10,
+                fontSize: ResumeTypography.body,
                 fontWeight: FontWeight.w900,
                 letterSpacing: 1.2,
               ),
@@ -3168,21 +3770,6 @@ class _ResumePreviewBody extends StatelessWidget {
         physics: const NeverScrollableScrollPhysics(),
         padding: EdgeInsets.zero,
         children: [
-          if (page.showDetails) ...[
-            panelTitle(Icons.person, "ABOUT"),
-            const SizedBox(height: 8),
-            Text(
-              data.summary.trim().isEmpty ? " " : data.summary.trim(),
-              maxLines: null,
-              overflow: TextOverflow.visible,
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.75),
-                fontSize: 9,
-                height: 1.35,
-              ),
-            ),
-            const SizedBox(height: 12),
-          ],
           if (page.languages.isNotEmpty) ...[
             panelTitle(Icons.translate, "LANGUAGES"),
             const SizedBox(height: 8),
@@ -3223,7 +3810,7 @@ class _ResumePreviewBody extends StatelessWidget {
             Text(
               "CONTACT",
               style: TextStyle(
-                fontSize: 11,
+                fontSize: ResumeTypography.body,
                 fontWeight: FontWeight.w900,
                 color: const Color(0xFF111827),
               ),
@@ -3262,8 +3849,9 @@ class _ResumePreviewBody extends StatelessWidget {
             Wrap(
               spacing: 6,
               runSpacing: 6,
+              alignment: WrapAlignment.start,
               children: page.skills
-                  .take(10)
+                  .take(12)
                   .map((s) => _chip(s, style.accent))
                   .toList(),
             ),
@@ -3483,11 +4071,14 @@ class _ResumePreviewBody extends StatelessWidget {
       ),
       child: Text(
         text,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
+        maxLines: 2,
+        overflow: TextOverflow.visible,
+        softWrap: true,
         style: TextStyle(
-          fontSize: 8.5,
+          fontFamily: _bodyFf,
+          fontSize: ResumeTypography.body,
           fontWeight: FontWeight.w800,
+          height: 1.15,
           color: fg.withOpacity(0.85),
         ),
       ),
@@ -3507,11 +4098,12 @@ class _ResumePreviewBody extends StatelessWidget {
         if (top.isNotEmpty)
           Text(
             top,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
+            maxLines: 4,
+            overflow: TextOverflow.visible,
             style: TextStyle(
+              fontFamily: _bodyFf,
               color: style.sidebarOnColor.withOpacity(0.88),
-              fontSize: 9,
+              fontSize: ResumeTypography.body,
               height: 1.25,
               fontWeight: FontWeight.w700,
             ),
@@ -3524,7 +4116,7 @@ class _ResumePreviewBody extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
               color: style.sidebarOnColor.withOpacity(0.70),
-              fontSize: 8.5,
+              fontSize: ResumeTypography.body,
               height: 1.1,
             ),
           ),
@@ -3538,10 +4130,9 @@ class _ResumePreviewBody extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 8),
       child: Text(
         text,
-        style: TextStyle(
+        style: ResumeTypography.headingStyle(
+          _bodyFf,
           color: style.sidebarOnColor.withOpacity(0.9),
-          fontSize: 11,
-          fontWeight: FontWeight.w800,
           letterSpacing: 0.3,
         ),
       ),
@@ -3558,14 +4149,18 @@ class _ResumePreviewBody extends StatelessWidget {
         overflow: TextOverflow.ellipsis,
         style: TextStyle(
           color: style.sidebarOnColor.withOpacity(0.78),
-          fontSize: 9,
+          fontSize: ResumeTypography.body,
           height: 1.25,
         ),
       ),
     );
   }
 
-  Widget _skillBar(String label, _TemplateStyle style) {
+  Widget _skillBar(
+    String label,
+    _TemplateStyle style, {
+    int maxLabelLines = 1,
+  }) {
     final base = (label.hashCode % 50) + 45; // 45..94
     final value = base / 100.0;
     return Column(
@@ -3573,12 +4168,15 @@ class _ResumePreviewBody extends StatelessWidget {
       children: [
         Text(
           label,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+          maxLines: maxLabelLines,
+          overflow: maxLabelLines > 1
+              ? TextOverflow.visible
+              : TextOverflow.ellipsis,
           style: TextStyle(
+            fontFamily: _bodyFf,
             color: style.sidebarOnColor.withOpacity(0.85),
-            fontSize: 8,
-            height: 1.0,
+            fontSize: ResumeTypography.body,
+            height: 1.2,
           ),
         ),
         const SizedBox(height: 4),
@@ -3595,46 +4193,116 @@ class _ResumePreviewBody extends StatelessWidget {
     );
   }
 
-  Widget _template1SkillValueWrap(String raw, TextStyle chipStyle) {
+  /// Template 2: bullet, or labeled line (Client:, Defect Management Tool:, etc.).
+  Widget _template2ExperienceLine(String line, TextStyle bodyStyle) {
+    final t = line.trim();
+    if (t.isEmpty) return const SizedBox.shrink();
+
+    if (ExperienceDisplay.looksLikeResponsibilitiesHeading(t)) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 4, bottom: 4),
+        child: Text(
+          t.endsWith(':') ? t : '$t:',
+          style: ResumeTypography.headingStyle(
+            _bodyFf,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 0.6,
+            color: const Color(0xFF111827),
+            height: 1.2,
+          ),
+        ),
+      );
+    }
+
+    final colon = t.indexOf(':');
+    if (colon > 0 && colon < 48 && ExperienceDisplay.looksLikeMetaLine(t)) {
+      final label = t.substring(0, colon + 1);
+      final rest = t.substring(colon + 1).trim();
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 3),
+        child: Text.rich(
+          TextSpan(
+            style: bodyStyle,
+            children: [
+              TextSpan(
+                text: label,
+                style: bodyStyle.copyWith(fontWeight: FontWeight.w800),
+              ),
+              if (rest.isNotEmpty) TextSpan(text: ' $rest'),
+            ],
+          ),
+          textAlign: TextAlign.justify,
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 3),
+      child: Text(
+        t.startsWith('•') ? t : '• $t',
+        textAlign: TextAlign.justify,
+        style: bodyStyle,
+      ),
+    );
+  }
+
+  /// Hanging-indent bullet row for template 1 body copy.
+  Widget _template1Bullet(String text, TextStyle style) {
+    final t = text.trim();
+    if (t.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 1.5, right: 6),
+            child: Text(
+              '•',
+              style: style.copyWith(fontWeight: FontWeight.w900),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              t,
+              style: style,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _template1SkillValueWrap(
+    String raw,
+    TextStyle chipStyle, {
+    Color? accent,
+  }) {
     final t = raw.trim();
     final parts = t.isEmpty
         ? const <String>[]
         : (_splitSkillListValue(t).isNotEmpty ? _splitSkillListValue(t) : <String>[t]);
-    const bg = Color(0xFFF1F5F9); // slate-100
-    final border = const Color(0xFF0F172A).withOpacity(0.12);
+    const bg = Color(0xFFF1F5F9);
+    final borderColor = (accent ?? const Color(0xFF1E40AF)).withOpacity(0.22);
     return Wrap(
-      spacing: 6,
-      runSpacing: 6,
+      spacing: 5,
+      runSpacing: 5,
       children: [
         for (final part in parts)
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
             decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  Color(0xFFFFFFFF),
-                  bg,
-                ],
-              ),
-              borderRadius: BorderRadius.circular(999),
-              border: Border.all(color: border, width: 0.8),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.06),
-                  blurRadius: 8,
-                  offset: const Offset(0, 3),
-                ),
-              ],
+              color: bg,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: borderColor, width: 0.75),
             ),
             child: Text(
               part,
               style: chipStyle.copyWith(
-                fontSize: 8.6,
-                fontWeight: FontWeight.w800,
-                height: 1.0,
-                letterSpacing: 0.1,
+                fontSize: ResumeTypography.body,
+                fontWeight: FontWeight.w700,
+                height: 1.05,
+                letterSpacing: 0.05,
               ),
             ),
           ),
@@ -3647,17 +4315,14 @@ class _ResumePreviewBody extends StatelessWidget {
     Map<String, dynamic> section,
     _TemplateStyle style,
   ) {
-    final bodyStyle = ResumeTheme.body.copyWith(
-      fontSize: 10.25,
-      height: 1.35,
+    final bodyStyle = ResumeTypography.bodyStyle(
+      _bodyFf,
       color: const Color(0xFF0F172A),
-      fontFamily: _bodyFf,
     );
-    final bodyStyleLight = ResumeTheme.body.copyWith(
-      fontSize: 10.0,
-      height: 1.35,
+    final bodyStyleLight = ResumeTypography.bodyStyle(
+      _bodyFf,
       color: Colors.black.withOpacity(0.70),
-      fontFamily: _bodyFf,
+      height: ResumeTypography.lineHeightTight,
     );
     switch (section["type"]) {
       case "header":
@@ -3670,17 +4335,23 @@ class _ResumePreviewBody extends StatelessWidget {
           return const SizedBox.shrink();
         }
 
-        // Template 4 puts summary on the left ("ABOUT ME"), so hide profile.
-        if (style.id == "4" &&
-            section["title"].toString().toLowerCase().contains("profile")) {
+        // Template 3 shows summary in the header ribbon only.
+        final titleLower = section["title"].toString().toLowerCase();
+        if (style.id == "3" &&
+            (titleLower.contains("profile") ||
+                titleLower.contains("summary"))) {
           return const SizedBox.shrink();
         }
 
         final sectionPadBottom = style.id == "1" ? 12.0 : 18.0;
-        final titleLower = section["title"].toString().toLowerCase();
         final isProfileSummary = titleLower.contains("profile") ||
             titleLower.contains("summary") ||
             titleLower.contains("about");
+        final displayTitle = style.id == "4" && isProfileSummary
+            ? "ABOUT ME"
+            : (style.id == "3"
+                ? section["title"].toString().toUpperCase()
+                : section["title"].toString());
         return Padding(
           padding: EdgeInsets.only(bottom: sectionPadBottom),
           child: Column(
@@ -3689,24 +4360,17 @@ class _ResumePreviewBody extends StatelessWidget {
               if (style.id == "2")
                 _contentTitleTemplate2(section["title"].toString(), style)
               else
-                _contentTitle(
-                  style.id == "3"
-                      ? section["title"].toString().toUpperCase()
-                      : section["title"].toString(),
-                  style,
-                ),
+                _contentTitle(displayTitle, style),
               SizedBox(height: style.id == "1" ? 8 : 10),
               Text(
                 contentStr,
                 textAlign: (style.id == "2" || style.id == "1")
                     ? TextAlign.justify
                     : TextAlign.start,
-                maxLines: (style.id == "1" || !isProfileSummary) ? null : 8,
-                overflow: (style.id == "1" || !isProfileSummary)
-                    ? TextOverflow.visible
-                    : TextOverflow.ellipsis,
+                maxLines: null,
+                overflow: TextOverflow.visible,
                 style: style.id == "1"
-                    ? bodyStyle.copyWith(fontSize: 9.9, height: 1.34)
+                    ? bodyStyle
                     : (style.id == "5" ? bodyStyleLight : bodyStyle),
               ),
             ],
@@ -3721,9 +4385,11 @@ class _ResumePreviewBody extends StatelessWidget {
             ? "WORK EXPERIENCE"
             : (style.id == "2")
                 ? "PROFESSIONAL EXPERIENCE"
-                : (style.id == "6"
-                    ? "Work Experience"
-                    : "Employment History");
+                : (style.id == "4")
+                    ? "EMPLOYMENT HISTORY"
+                    : (style.id == "6"
+                        ? "Work Experience"
+                        : "Employment History");
 
         final t1ShowWorkHeading = (style.id == "1" || style.id == "2")
             ? (section["t1_show_work_heading"] as bool? ?? true)
@@ -3732,7 +4398,7 @@ class _ResumePreviewBody extends StatelessWidget {
             ? (section["t1_show_job_header"] as bool? ?? true)
             : true;
 
-        final expBlockPadBottom = style.id == "1" ? 12.0 : 18.0;
+        final expBlockPadBottom = style.id == "1" ? 4.0 : 18.0;
         return Padding(
           padding: EdgeInsets.only(bottom: expBlockPadBottom),
           child: Column(
@@ -3748,95 +4414,96 @@ class _ResumePreviewBody extends StatelessWidget {
               ...items.asMap().entries.map<Widget>((entry) {
                 final exp = entry.value as Experience;
                 final expIsLast = entry.key == items.length - 1;
-                final bullets = exp.description
-                    .map((b) => b.trim())
-                    .where((b) => b.isNotEmpty)
-                    .toList();
+                final bullets = _experienceBulletsDisplay(exp);
                 if (style.id == "1") {
                   final t1Body = TextStyle(
                     fontFamily: _bodyFf,
-                    fontSize: 10.0,
-                    height: 1.34,
-                    color: const Color(0xFF111111),
+                    fontSize: ResumeTypography.body,
+                    height: ResumeTypography.lineHeightBody,
+                    color: const Color(0xFF1F2937),
                   );
                   final t1Muted = TextStyle(
                     fontFamily: _bodyFf,
-                    fontSize: 8.75,
-                    color: Colors.black.withOpacity(0.55),
+                    fontSize: ResumeTypography.body,
+                    height: ResumeTypography.lineHeightTight,
+                    color: const Color(0xFF4B5563),
                   );
-                  final company =
-                      exp.company.trim().isNotEmpty ? exp.company.trim() : "";
+                  final company = _experienceCompanyDisplay(exp);
+                  final role = exp.role.trim();
+                  final when = _experienceWhenDisplay(exp);
                   return Padding(
-                    padding: EdgeInsets.only(
-                      bottom: t1ShowJobHeader ? 12 : 4,
-                    ),
+                    padding: EdgeInsets.only(bottom: expIsLast ? 0 : 6),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        if (t1ShowJobHeader) ...[
-                          if (company.isNotEmpty) ...[
-                            Text(
-                              company,
-                              style: TextStyle(
-                                fontFamily: _bodyFf,
-                                fontSize: 10.25,
-                                fontWeight: FontWeight.w800,
-                                color: const Color(0xFF111111),
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                          ],
+                        if (style.id == "1"
+                            ? (items.length > 1 || t1ShowJobHeader)
+                            : t1ShowJobHeader) ...[
                           Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Expanded(
                                 child: Text(
-                                  exp.role,
-                                  style: t1Muted.copyWith(
-                                    fontWeight: FontWeight.w600,
+                                  role,
+                                  style: TextStyle(
+                                    fontFamily: _bodyFf,
+                                    fontSize: ResumeTypography.heading,
+                                    fontWeight: FontWeight.w800,
+                                    height: 1.2,
+                                    color: const Color(0xFF111827),
                                   ),
                                 ),
                               ),
-                              Text(
-                                exp.duration,
-                                style: t1Muted,
-                              ),
+                              if (when.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 8),
+                                  child: Text(
+                                    when,
+                                    textAlign: TextAlign.right,
+                                    style: t1Muted.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
                             ],
                           ),
+                          if (company.isNotEmpty) ...[
+                            const SizedBox(height: 3),
+                            Text(
+                              company,
+                              style: t1Muted.copyWith(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
                           const SizedBox(height: 6),
                         ] else
                           const SizedBox(height: 2),
                         if (bullets.isNotEmpty)
-                          ...bullets.map(
-                            (b) => Padding(
-                              padding:
-                                  const EdgeInsets.only(left: 12, bottom: 3),
-                              child: Text("• $b", style: t1Body),
-                            ),
+                          ...bullets.map((b) => _template1Bullet(b, t1Body)),
+                        if (!expIsLast) ...[
+                          const SizedBox(height: 5),
+                          Divider(
+                            height: 1,
+                            thickness: 1,
+                            color: Colors.black.withOpacity(0.07),
                           ),
+                        ],
                       ],
                     ),
                   );
                 }
                 if (style.id == "2") {
                   final role = exp.role.trim();
-                  final company = exp.company.trim();
-                  final when = exp.duration.trim();
-                  final companyLine = company.isNotEmpty ? company : "";
+                  final when = _experienceWhenDisplay(exp);
+                  final companyLine = _experienceCompanyDisplay(exp);
 
-                  String? intro;
-                  final bulletLines = <String>[];
-                  if (bullets.isNotEmpty) {
-                    if (t1ShowJobHeader &&
-                        bullets.length >= 2 &&
-                        (bullets.first.length > 140 ||
-                            bullets.first.contains('.'))) {
-                      intro = bullets.first;
-                      bulletLines.addAll(bullets.skip(1));
-                    } else {
-                      bulletLines.addAll(bullets);
-                    }
-                  }
+                  final split = ExperienceDisplay.splitIntroFromBullets(
+                    bullets,
+                    allowIntro: t1ShowJobHeader,
+                  );
+                  final intro = split.intro;
+                  final bulletLines = split.bullets;
 
                   return Padding(
                     padding: EdgeInsets.only(bottom: expIsLast ? 0 : 12),
@@ -3852,7 +4519,7 @@ class _ResumePreviewBody extends StatelessWidget {
                                   role.toUpperCase(),
                                   style: TextStyle(
                                     fontFamily: _bodyFf,
-                                    fontSize: 10.5,
+                                    fontSize: ResumeTypography.heading,
                                     fontWeight: FontWeight.w900,
                                     letterSpacing: 0.8,
                                     height: 1.1,
@@ -3866,7 +4533,7 @@ class _ResumePreviewBody extends StatelessWidget {
                                   textAlign: TextAlign.right,
                                   style: TextStyle(
                                     fontFamily: _bodyFf,
-                                    fontSize: 8.75,
+                                    fontSize: ResumeTypography.body,
                                     fontWeight: FontWeight.w600,
                                     color: const Color(0xFF4B5563),
                                     height: 1.1,
@@ -3880,7 +4547,7 @@ class _ResumePreviewBody extends StatelessWidget {
                               companyLine,
                               style: TextStyle(
                                 fontFamily: _bodyFf,
-                                fontSize: 9.1,
+                                fontSize: ResumeTypography.body,
                                 fontWeight: FontWeight.w600,
                                 height: 1.2,
                                 color: const Color(0xFF374151),
@@ -3894,7 +4561,7 @@ class _ResumePreviewBody extends StatelessWidget {
                               textAlign: TextAlign.justify,
                               style: bodyStyle.copyWith(
                                 fontFamily: _bodyFf,
-                                fontSize: 10.0,
+                                fontSize: ResumeTypography.body,
                                 height: 1.35,
                                 color: const Color(0xFF111827),
                               ),
@@ -3904,17 +4571,13 @@ class _ResumePreviewBody extends StatelessWidget {
                         if (bulletLines.isNotEmpty) ...[
                           SizedBox(height: intro == null ? 8 : 6),
                           for (final b in bulletLines)
-                            Padding(
-                              padding: const EdgeInsets.only(bottom: 3),
-                              child: Text(
-                                "• $b",
-                                textAlign: TextAlign.justify,
-                                style: bodyStyleLight.copyWith(
-                                  fontFamily: _bodyFf,
-                                  fontSize: 10.0,
-                                  color: const Color(0xFF374151),
-                                  height: 1.35,
-                                ),
+                            _template2ExperienceLine(
+                              b,
+                              bodyStyleLight.copyWith(
+                                fontFamily: _bodyFf,
+                                fontSize: ResumeTypography.body,
+                                color: const Color(0xFF374151),
+                                height: 1.35,
                               ),
                             ),
                         ],
@@ -3937,7 +4600,7 @@ class _ResumePreviewBody extends StatelessWidget {
                         Text(
                           exp.role,
                           style: const TextStyle(
-                            fontSize: 10.5,
+                            fontSize: ResumeTypography.heading,
                             fontWeight: FontWeight.w900,
                             letterSpacing: 0.8,
                             color: Color(0xFF0B2230),
@@ -3945,9 +4608,16 @@ class _ResumePreviewBody extends StatelessWidget {
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          "${exp.company}  |  ${exp.duration}",
+                          () {
+                            final when = _experienceWhenDisplay(exp);
+                            final co = _experienceCompanyDisplay(exp);
+                            if (co.isNotEmpty && when.isNotEmpty) {
+                              return '$co  |  $when';
+                            }
+                            return when.isNotEmpty ? when : co;
+                          }(),
                           style: TextStyle(
-                            fontSize: 8.75,
+                            fontSize: ResumeTypography.body,
                             fontWeight: FontWeight.w700,
                             color: Colors.black.withOpacity(0.55),
                           ),
@@ -4004,7 +4674,7 @@ class _ResumePreviewBody extends StatelessWidget {
                                     child: Text(
                                       exp.role.toUpperCase(),
                                       style: const TextStyle(
-                                        fontSize: 10.5,
+                                        fontSize: ResumeTypography.heading,
                                         fontWeight: FontWeight.w900,
                                         letterSpacing: 0.6,
                                         color: Color(0xFF111827),
@@ -4013,9 +4683,9 @@ class _ResumePreviewBody extends StatelessWidget {
                                   ),
                                   const SizedBox(width: 8),
                                   Text(
-                                    exp.duration,
+                                    _experienceWhenDisplay(exp),
                                     style: TextStyle(
-                                      fontSize: 8.5,
+                                      fontSize: ResumeTypography.body,
                                       letterSpacing: 1.0,
                                       color: Colors.grey.shade700,
                                     ),
@@ -4024,9 +4694,9 @@ class _ResumePreviewBody extends StatelessWidget {
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                exp.company,
+                                _experienceCompanyDisplay(exp),
                                 style: TextStyle(
-                                  fontSize: 9.5,
+                                  fontSize: ResumeTypography.body,
                                   fontWeight: FontWeight.w800,
                                   color: Colors.black.withOpacity(0.60),
                                 ),
@@ -4053,18 +4723,23 @@ class _ResumePreviewBody extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        "${exp.role}, ${exp.company}",
+                        () {
+                          final co = _experienceCompanyDisplay(exp);
+                          return co.isEmpty
+                              ? exp.role.trim()
+                              : '${exp.role.trim()}, $co';
+                        }(),
                         style: const TextStyle(
-                          fontSize: 10.5,
+                          fontSize: ResumeTypography.heading,
                           fontWeight: FontWeight.w800,
                           color: Color(0xFF0F172A),
                         ),
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        exp.duration,
+                        _experienceWhenDisplay(exp),
                         style: TextStyle(
-                          fontSize: 8.5,
+                          fontSize: ResumeTypography.body,
                           letterSpacing: 1.0,
                           color: Colors.grey.shade600,
                         ),
@@ -4093,13 +4768,17 @@ class _ResumePreviewBody extends StatelessWidget {
         if (eduItems.isEmpty) return const SizedBox.shrink();
 
         if (style.id == "1") {
+          final showEduHeading =
+              (section["t1_show_section_heading"] as bool?) ?? true;
           return Padding(
             padding: const EdgeInsets.only(bottom: 12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _contentTitle("EDUCATION", style),
-                const SizedBox(height: 6),
+                if (showEduHeading) ...[
+                  _contentTitle("EDUCATION", style),
+                  const SizedBox(height: 8),
+                ],
                 ...eduItems.map<Widget>((e) {
                   final ed = e as Education;
                   final deg = ed.degree.trim();
@@ -4107,45 +4786,53 @@ class _ResumePreviewBody extends StatelessWidget {
                   final yr = ed.year.trim();
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 8),
-                    child: Column(
+                    child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        if (deg.isNotEmpty)
-                          Text(
-                            deg,
-                            style: TextStyle(
-                              fontFamily: _bodyFf,
-                              fontSize: 10,
-                              fontWeight: FontWeight.w800,
-                              height: 1.25,
-                              color: const Color(0xFF111111),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (deg.isNotEmpty)
+                                Text(
+                                  deg,
+                                  style: TextStyle(
+                                    fontFamily: _bodyFf,
+                                    fontSize: ResumeTypography.body,
+                                    fontWeight: FontWeight.w800,
+                                    height: 1.25,
+                                    color: const Color(0xFF111827),
+                                  ),
+                                ),
+                              if (inst.isNotEmpty) ...[
+                                if (deg.isNotEmpty) const SizedBox(height: 2),
+                                Text(
+                                  inst,
+                                  style: TextStyle(
+                                    fontFamily: _bodyFf,
+                                    fontSize: ResumeTypography.body,
+                                    height: 1.3,
+                                    color: Colors.black.withOpacity(0.68),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                        if (yr.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 8),
+                            child: Text(
+                              yr,
+                              style: TextStyle(
+                                fontFamily: _bodyFf,
+                                fontSize: ResumeTypography.body,
+                                fontWeight: FontWeight.w600,
+                                height: 1.2,
+                                color: Colors.black.withOpacity(0.5),
+                              ),
                             ),
                           ),
-                        if (inst.isNotEmpty) ...[
-                          if (deg.isNotEmpty) const SizedBox(height: 2),
-                          Text(
-                            inst,
-                            style: TextStyle(
-                              fontFamily: _bodyFf,
-                              fontSize: 9.25,
-                              height: 1.3,
-                              color: Colors.black.withOpacity(0.72),
-                            ),
-                          ),
-                        ],
-                        if (yr.isNotEmpty) ...[
-                          if (deg.isNotEmpty || inst.isNotEmpty)
-                            const SizedBox(height: 2),
-                          Text(
-                            yr,
-                            style: TextStyle(
-                              fontFamily: _bodyFf,
-                              fontSize: 8.85,
-                              height: 1.2,
-                              color: Colors.black.withOpacity(0.5),
-                            ),
-                          ),
-                        ],
                       ],
                     ),
                   );
@@ -4207,27 +4894,31 @@ class _ResumePreviewBody extends StatelessWidget {
                 .toList() ??
             const <String>[];
         if (proj.isEmpty) return const SizedBox.shrink();
+        final showProjHeading = style.id != "1" ||
+            ((section["t1_show_section_heading"] as bool?) ?? true);
+        final t1ListBody = TextStyle(
+          fontFamily: _bodyFf,
+          fontSize: ResumeTypography.body,
+          height: 1.36,
+          color: const Color(0xFF1F2937),
+        );
         return Padding(
-          padding: const EdgeInsets.only(bottom: 18),
+          padding: EdgeInsets.only(bottom: style.id == "1" ? 12 : 18),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _contentTitle(style.id == "1" ? "PROJECT" : "PROJECTS", style),
-              const SizedBox(height: 10),
-              for (final line in proj)
-                Padding(
-                  padding: const EdgeInsets.only(left: 12, bottom: 4),
-                  child: Text(
-                    "• $line",
-                    style: style.id == "1"
-                        ? const TextStyle(
-                            fontSize: 9.5,
-                            height: 1.4,
-                            color: Color(0xFF111111),
-                          )
-                        : bodyStyle,
+              if (showProjHeading) ...[
+                _contentTitle("PROJECTS", style),
+                SizedBox(height: style.id == "1" ? 8 : 10),
+              ],
+              if (style.id == "1")
+                ...proj.map((line) => _template1Bullet(line, t1ListBody))
+              else
+                for (final line in proj)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 12, bottom: 4),
+                    child: Text("• $line", style: bodyStyle),
                   ),
-                ),
             ],
           ),
         );
@@ -4239,27 +4930,31 @@ class _ResumePreviewBody extends StatelessWidget {
                 .toList() ??
             const <String>[];
         if (items.isEmpty) return const SizedBox.shrink();
+        final showCoursesHeading = style.id != "1" ||
+            ((section["t1_show_section_heading"] as bool?) ?? true);
+        final t1ListBody = TextStyle(
+          fontFamily: _bodyFf,
+          fontSize: ResumeTypography.body,
+          height: 1.36,
+          color: const Color(0xFF1F2937),
+        );
         return Padding(
-          padding: const EdgeInsets.only(bottom: 18),
+          padding: EdgeInsets.only(bottom: style.id == "1" ? 12 : 18),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _contentTitle(style.id == "1" ? "COURSES" : "COURSES", style),
-              const SizedBox(height: 10),
-              for (final line in items)
-                Padding(
-                  padding: const EdgeInsets.only(left: 12, bottom: 4),
-                  child: Text(
-                    "• $line",
-                    style: style.id == "1"
-                        ? const TextStyle(
-                            fontSize: 9.5,
-                            height: 1.4,
-                            color: Color(0xFF111111),
-                          )
-                        : bodyStyle,
+              if (showCoursesHeading) ...[
+                _contentTitle("COURSES", style),
+                SizedBox(height: style.id == "1" ? 8 : 10),
+              ],
+              if (style.id == "1")
+                ...items.map((line) => _template1Bullet(line, t1ListBody))
+              else
+                for (final line in items)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 12, bottom: 4),
+                    child: Text("• $line", style: bodyStyle),
                   ),
-                ),
             ],
           ),
         );
@@ -4271,27 +4966,27 @@ class _ResumePreviewBody extends StatelessWidget {
                 .toList() ??
             const <String>[];
         if (items.isEmpty) return const SizedBox.shrink();
+        final t1ListBody = TextStyle(
+          fontFamily: _bodyFf,
+          fontSize: ResumeTypography.body,
+          height: 1.36,
+          color: const Color(0xFF1F2937),
+        );
         return Padding(
-          padding: const EdgeInsets.only(bottom: 18),
+          padding: EdgeInsets.only(bottom: style.id == "1" ? 12 : 18),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _contentTitle(style.id == "1" ? "LANGUAGE" : "LANGUAGES", style),
-              const SizedBox(height: 10),
-              for (final line in items)
-                Padding(
-                  padding: const EdgeInsets.only(left: 12, bottom: 4),
-                  child: Text(
-                    "• $line",
-                    style: style.id == "1"
-                        ? const TextStyle(
-                            fontSize: 9.5,
-                            height: 1.4,
-                            color: Color(0xFF111111),
-                          )
-                        : bodyStyle,
+              _contentTitle("LANGUAGES", style),
+              SizedBox(height: style.id == "1" ? 8 : 10),
+              if (style.id == "1")
+                ...items.map((line) => _template1Bullet(line, t1ListBody))
+              else
+                for (final line in items)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 12, bottom: 4),
+                    child: Text("• $line", style: bodyStyle),
                   ),
-                ),
             ],
           ),
         );
@@ -4303,33 +4998,38 @@ class _ResumePreviewBody extends StatelessWidget {
                 .toList() ??
             const <String>[];
         if (items.isEmpty) return const SizedBox.shrink();
+        final showCertsHeading = style.id != "1" ||
+            ((section["t1_show_section_heading"] as bool?) ?? true);
         return Padding(
-          padding: const EdgeInsets.only(bottom: 18),
+          padding: EdgeInsets.only(bottom: style.id == "1" ? 12 : 18),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (style.id == "2")
-                _contentTitleTemplate2("CERTIFICATIONS", style)
-              else
-                _contentTitle(
-                  style.id == "1" ? "CERTIFICATION" : "CERTIFICATIONS",
-                  style,
-                ),
-              const SizedBox(height: 10),
-              for (final line in items)
-                Padding(
-                  padding: const EdgeInsets.only(left: 12, bottom: 4),
-                  child: Text(
-                    "• $line",
-                    style: style.id == "1"
-                        ? const TextStyle(
-                            fontSize: 9.5,
-                            height: 1.4,
-                            color: Color(0xFF111111),
-                          )
-                        : bodyStyle,
+              if (showCertsHeading) ...[
+                if (style.id == "2")
+                  _contentTitleTemplate2("CERTIFICATIONS", style)
+                else
+                  _contentTitle("CERTIFICATIONS", style),
+                SizedBox(height: style.id == "1" ? 8 : 10),
+              ],
+              if (style.id == "1")
+                ...items.map(
+                  (line) => _template1Bullet(
+                    line,
+                    TextStyle(
+                      fontFamily: _bodyFf,
+                      fontSize: ResumeTypography.body,
+                      height: 1.36,
+                      color: const Color(0xFF1F2937),
+                    ),
                   ),
-                ),
+                )
+              else
+                for (final line in items)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 12, bottom: 4),
+                    child: Text("• $line", style: bodyStyle),
+                  ),
             ],
           ),
         );
@@ -4343,7 +5043,7 @@ class _ResumePreviewBody extends StatelessWidget {
         if (items.isEmpty) return const SizedBox.shrink();
         final chipStyle = TextStyle(
           fontFamily: _bodyFf,
-          fontSize: 8.85,
+          fontSize: ResumeTypography.body,
           height: 1.22,
           color: const Color(0xFF111111),
         );
@@ -4355,7 +5055,11 @@ class _ResumePreviewBody extends StatelessWidget {
               _contentTitle("SKILLS", style),
               SizedBox(height: style.id == "1" ? 6 : 10),
               if (style.id == "1")
-                _template1SkillValueWrap(items.join(", "), chipStyle)
+                _template1SkillValueWrap(
+                  items.join(", "),
+                  chipStyle,
+                  accent: style.accent,
+                )
               else
                 Text(items.join(", "), style: bodyStyle),
             ],
@@ -4367,7 +5071,7 @@ class _ResumePreviewBody extends StatelessWidget {
         if (groups.isEmpty) return const SizedBox.shrink();
         final chipStyle = TextStyle(
           fontFamily: _bodyFf,
-          fontSize: 8.85,
+          fontSize: ResumeTypography.body,
           height: 1.22,
           color: const Color(0xFF111111),
         );
@@ -4387,10 +5091,8 @@ class _ResumePreviewBody extends StatelessWidget {
                       children: [
                         Text(
                           (g["label"] ?? "").toString().toUpperCase(),
-                          style: TextStyle(
-                            fontFamily: _bodyFf,
-                            fontSize: style.id == "1" ? 9.1 : 9.5,
-                            fontWeight: FontWeight.w800,
+                          style: ResumeTypography.headingStyle(
+                            _bodyFf,
                             height: 1.15,
                             letterSpacing: 0.4,
                             color: const Color(0xFF111111),
@@ -4401,6 +5103,7 @@ class _ResumePreviewBody extends StatelessWidget {
                           _template1SkillValueWrap(
                             (g["value"] ?? "").toString(),
                             chipStyle,
+                            accent: style.accent,
                           )
                         else
                           Text.rich(
@@ -4431,30 +5134,39 @@ class _ResumePreviewBody extends StatelessWidget {
             (section["items"] as List?)?.map((e) => e.toString().trim()).where((s) => s.isNotEmpty).toList() ??
                 const <String>[];
         if (ach.isEmpty) return const SizedBox.shrink();
+        final showAchHeading = style.id != "1" ||
+            ((section["t1_show_section_heading"] as bool?) ?? true);
+        final t1ListBody = TextStyle(
+          fontFamily: _bodyFf,
+          fontSize: ResumeTypography.body,
+          height: 1.36,
+          color: const Color(0xFF1F2937),
+        );
         return Padding(
-          padding: const EdgeInsets.only(bottom: 18),
+          padding: EdgeInsets.only(bottom: style.id == "1" ? 12 : 18),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _contentTitle(
-                style.id == "1" ? "ACHIEVEMENT" : "ACHIEVEMENTS",
-                style,
-              ),
-              const SizedBox(height: 10),
-              for (final line in ach)
-                Padding(
-                  padding: const EdgeInsets.only(left: 12, bottom: 4),
-                  child: Text(
-                    "• ${CategoryEntryDisplay.formatAchievementLine(line)}",
-                    style: style.id == "1"
-                        ? const TextStyle(
-                            fontSize: 9.5,
-                            height: 1.4,
-                            color: Color(0xFF111111),
-                          )
-                        : bodyStyle,
+              if (showAchHeading) ...[
+                _contentTitle("ACHIEVEMENTS", style),
+                SizedBox(height: style.id == "1" ? 8 : 10),
+              ],
+              if (style.id == "1")
+                ...ach.map(
+                  (line) => _template1Bullet(
+                    CategoryEntryDisplay.formatAchievementLine(line),
+                    t1ListBody,
                   ),
-                ),
+                )
+              else
+                for (final line in ach)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 12, bottom: 4),
+                    child: Text(
+                      "• ${CategoryEntryDisplay.formatAchievementLine(line)}",
+                      style: bodyStyle,
+                    ),
+                  ),
             ],
           ),
         );
@@ -4482,7 +5194,7 @@ class _ResumePreviewBody extends StatelessWidget {
                 Text(
                   lines[0],
                   style: const TextStyle(
-                    fontSize: 10,
+                    fontSize: ResumeTypography.body,
                     fontWeight: FontWeight.w800,
                     color: Color(0xFF374151),
                   ),
@@ -4492,7 +5204,7 @@ class _ResumePreviewBody extends StatelessWidget {
                   Text(
                     lines[1],
                     style: TextStyle(
-                      fontSize: 9,
+                      fontSize: ResumeTypography.body,
                       height: 1.3,
                       color: Colors.grey.shade600,
                       fontWeight: FontWeight.w500,
@@ -4505,7 +5217,7 @@ class _ResumePreviewBody extends StatelessWidget {
                     child: Text(
                       lines[i],
                       style: TextStyle(
-                        fontSize: 8.25,
+                        fontSize: ResumeTypography.body,
                         height: 1.3,
                         color: Colors.grey.shade700,
                       ),
@@ -4528,23 +5240,60 @@ class _ResumePreviewBody extends StatelessWidget {
         }
 
         return Padding(
-          padding: const EdgeInsets.only(bottom: 18),
+          padding: EdgeInsets.only(bottom: style.id == "1" ? 12 : 18),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _contentTitle(
-                style.id == "2" ? "REFERENCE" : "REFERENCES",
-                style,
-              ),
-              const SizedBox(height: 10),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(child: Column(children: leftCol)),
-                  const SizedBox(width: 10),
-                  Expanded(child: Column(children: rightCol)),
-                ],
-              ),
+              _contentTitle("REFERENCES", style),
+              SizedBox(height: style.id == "1" ? 8 : 10),
+              if (style.id == "1")
+                ...refItems.map((block) {
+                  final lines = block
+                      .split(RegExp(r'\r?\n'))
+                      .map((s) => s.trim())
+                      .where((s) => s.isNotEmpty)
+                      .toList();
+                  if (lines.isEmpty) return const SizedBox.shrink();
+                  final body = lines.length > 1 ? lines.sublist(1).join(' · ') : '';
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          lines[0],
+                          style: TextStyle(
+                            fontFamily: _bodyFf,
+                            fontSize: ResumeTypography.body,
+                            fontWeight: FontWeight.w800,
+                            color: const Color(0xFF111827),
+                          ),
+                        ),
+                        if (body.isNotEmpty) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            body,
+                            style: TextStyle(
+                              fontFamily: _bodyFf,
+                              fontSize: ResumeTypography.body,
+                              height: 1.3,
+                              color: Colors.black.withOpacity(0.62),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  );
+                })
+              else
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(child: Column(children: leftCol)),
+                    const SizedBox(width: 10),
+                    Expanded(child: Column(children: rightCol)),
+                  ],
+                ),
             ],
           ),
         );
@@ -4569,12 +5318,10 @@ class _ResumePreviewBody extends StatelessWidget {
           children: [
             Text(
               text.toUpperCase(),
-              style: TextStyle(
-                fontFamily: _bodyFf,
-                fontSize: 9.75,
-                fontWeight: FontWeight.w900,
-                letterSpacing: 1.2,
+              style: ResumeTypography.headingStyle(
+                _bodyFf,
                 color: titleOnWhite(style.accent),
+                letterSpacing: 1.2,
               ),
             ),
             const SizedBox(height: 5),
@@ -4607,10 +5354,8 @@ class _ResumePreviewBody extends StatelessWidget {
           ),
           child: Text(
             text.toUpperCase(),
-            style: TextStyle(
-              fontFamily: _bodyFf,
-              fontSize: 10,
-              fontWeight: FontWeight.w900,
+            style: ResumeTypography.headingStyle(
+              _bodyFf,
               letterSpacing: isTemplate3 ? 1.6 : 1.2,
               color: const Color(0xFF0F172A),
             ),
@@ -4622,10 +5367,8 @@ class _ResumePreviewBody extends StatelessWidget {
           children: [
             Text(
               text,
-              style: TextStyle(
-                fontFamily: _bodyFf,
-                fontSize: 11,
-                fontWeight: FontWeight.w900,
+              style: ResumeTypography.headingStyle(
+                _bodyFf,
                 color: const Color(0xFF0F172A),
               ),
             ),
@@ -4649,9 +5392,8 @@ class _ResumePreviewBody extends StatelessWidget {
       children: [
         Text(
           text.toUpperCase(),
-          style: TextStyle(
-            fontFamily: _bodyFf,
-            fontSize: 10,
+          style: ResumeTypography.headingStyle(
+            _bodyFf,
             fontWeight: FontWeight.w800,
             letterSpacing: 2.6,
             color: const Color(0xFF111827),
@@ -4710,9 +5452,16 @@ class _ResumePreviewBody extends StatelessWidget {
       width: double.infinity,
       child: Container(
         width: double.infinity,
-        padding: const EdgeInsets.symmetric(horizontal: 18),
+        padding: const EdgeInsets.fromLTRB(20, 13, 20, 11),
         decoration: BoxDecoration(
-          color: accent,
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              accent,
+              Color.lerp(accent, const Color(0xFF0F172A), 0.18)!,
+            ],
+          ),
         ),
         child: Center(
           child: Column(
@@ -4723,35 +5472,39 @@ class _ResumePreviewBody extends StatelessWidget {
               Text(
                 name,
                 textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.visible,
                 style: TextStyle(
                   fontFamily: _nameFf,
-                  fontSize: 18.8,
+                  fontSize: ResumeTypography.name,
                   fontWeight: FontWeight.w900,
                   color: onAccent,
-                  height: 1.05,
+                  height: 1.08,
                 ),
               ),
               if (role.isNotEmpty) ...[
-                const SizedBox(height: 4),
+                const SizedBox(height: 5),
                 Text(
                   role,
                   textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontFamily: _bodyFf,
-                    fontSize: 9.0,
-                    height: 1.15,
+                    fontSize: ResumeTypography.body,
+                    height: 1.2,
                     fontWeight: FontWeight.w700,
-                    letterSpacing: 0.4,
+                    letterSpacing: 0.35,
                     color: onAccentMuted,
                   ),
                 ),
               ],
-              const SizedBox(height: 6),
+              const SizedBox(height: 7),
               Wrap(
                 alignment: WrapAlignment.center,
                 crossAxisAlignment: WrapCrossAlignment.center,
-                spacing: 12,
-                runSpacing: 6,
+                spacing: 10,
+                runSpacing: 5,
                 children: [
                   if (email.isNotEmpty)
                     _tappableContactRow(
@@ -4814,16 +5567,17 @@ class _ResumePreviewBody extends StatelessWidget {
         Icon(icon, size: 12, color: onAccentMuted),
         const SizedBox(width: 5),
         ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 170),
+          constraints: const BoxConstraints(maxWidth: 220),
           child: Text(
             text,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
+            maxLines: 2,
+            overflow: TextOverflow.visible,
+            softWrap: true,
             style: TextStyle(
               fontFamily: _bodyFf,
-              fontSize: 8.3,
-              fontWeight: FontWeight.w800,
-              height: 1.1,
+              fontSize: ResumeTypography.body,
+              fontWeight: FontWeight.w700,
+              height: 1.15,
               color: Colors.white.withOpacity(0.95),
               decoration: underline ? TextDecoration.underline : null,
               decorationColor: Colors.white.withOpacity(0.85),
@@ -4872,7 +5626,7 @@ class _ResumePreviewBody extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontFamily: _bodyFf,
-                fontSize: 8.25,
+                fontSize: ResumeTypography.body,
                 height: 1.18,
                 color: const Color(0xFF333333),
                 decoration: uri == null ? null : TextDecoration.underline,
@@ -4917,7 +5671,7 @@ class _ResumePreviewBody extends StatelessWidget {
           Text(
             data.name.isNotEmpty ? data.name : "Your Name",
             style: const TextStyle(
-              fontSize: 20,
+              fontSize: ResumeTypography.name,
               fontWeight: FontWeight.w900,
               color: Color(0xFF111827),
               height: 1.05,
@@ -4929,7 +5683,7 @@ class _ResumePreviewBody extends StatelessWidget {
               child: Text(
                 role,
                 style: TextStyle(
-                  fontSize: 11,
+                  fontSize: ResumeTypography.body,
                   fontWeight: FontWeight.w700,
                   letterSpacing: 1.2,
                   color: const Color(0xFF111827).withOpacity(0.65),
@@ -4971,7 +5725,7 @@ class _ResumePreviewBody extends StatelessWidget {
             name,
             style: TextStyle(
               fontFamily: _nameFf,
-              fontSize: 20,
+              fontSize: ResumeTypography.name,
               fontWeight: FontWeight.w900,
               height: 1.02,
               color: const Color(0xFF0B1220),
@@ -4984,7 +5738,7 @@ class _ResumePreviewBody extends StatelessWidget {
                 role,
                 style: TextStyle(
                   fontFamily: _bodyFf,
-                  fontSize: 10.5,
+                  fontSize: ResumeTypography.heading,
                   fontWeight: FontWeight.w700,
                   letterSpacing: 0.6,
                   color: Colors.black.withOpacity(0.62),
@@ -5001,7 +5755,7 @@ class _ResumePreviewBody extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontFamily: _bodyFf,
-                  fontSize: 9.2,
+                  fontSize: ResumeTypography.body,
                   fontWeight: FontWeight.w600,
                   color: Colors.black.withOpacity(0.70),
                   height: 1.12,
@@ -5038,7 +5792,7 @@ class _ResumePreviewBody extends StatelessWidget {
             name.toUpperCase(),
             style: TextStyle(
               fontFamily: _bodyFf,
-              fontSize: 17.8,
+              fontSize: ResumeTypography.name,
               fontWeight: FontWeight.w900,
               letterSpacing: 1.2,
               height: 1.02,
@@ -5052,7 +5806,7 @@ class _ResumePreviewBody extends StatelessWidget {
                 role,
                 style: TextStyle(
                   fontFamily: _bodyFf,
-                  fontSize: 10.2,
+                  fontSize: ResumeTypography.body,
                   fontWeight: FontWeight.w700,
                   color: const Color(0xFF1F2A44).withOpacity(0.85),
                   height: 1.12,
@@ -5068,7 +5822,7 @@ class _ResumePreviewBody extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontFamily: _bodyFf,
-                  fontSize: 9.1,
+                  fontSize: ResumeTypography.body,
                   fontWeight: FontWeight.w600,
                   color: Colors.black.withOpacity(0.66),
                   height: 1.12,
@@ -5113,7 +5867,7 @@ class _ResumePreviewBody extends StatelessWidget {
                   name,
                   style: TextStyle(
                     fontFamily: _nameFf,
-                    fontSize: 20,
+                    fontSize: ResumeTypography.name,
                     fontWeight: FontWeight.w900,
                     height: 1.02,
                     color: const Color(0xFF052E2B),
@@ -5137,7 +5891,7 @@ class _ResumePreviewBody extends StatelessWidget {
                 role,
                 style: TextStyle(
                   fontFamily: _bodyFf,
-                  fontSize: 10.2,
+                  fontSize: ResumeTypography.body,
                   fontWeight: FontWeight.w700,
                   color: Colors.black.withOpacity(0.62),
                   height: 1.12,
@@ -5153,7 +5907,7 @@ class _ResumePreviewBody extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontFamily: _bodyFf,
-                  fontSize: 9.1,
+                  fontSize: ResumeTypography.body,
                   fontWeight: FontWeight.w600,
                   color: Colors.black.withOpacity(0.70),
                   height: 1.12,
@@ -5191,7 +5945,7 @@ class _ResumePreviewBody extends StatelessWidget {
             textAlign: TextAlign.center,
             style: TextStyle(
               fontFamily: _nameFf,
-              fontSize: 26,
+              fontSize: ResumeTypography.name,
               height: 1.0,
               letterSpacing: 1.6,
               color: gold,
@@ -5204,7 +5958,7 @@ class _ResumePreviewBody extends StatelessWidget {
             textAlign: TextAlign.center,
             style: TextStyle(
               fontFamily: _bodyFf,
-              fontSize: 10.5,
+              fontSize: ResumeTypography.heading,
               height: 1.0,
               letterSpacing: 2.4,
               fontWeight: FontWeight.w700,
@@ -5220,11 +5974,11 @@ class _ResumePreviewBody extends StatelessWidget {
     final role =
         data.experiences.isNotEmpty ? data.experiences.first.role : "";
     return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.only(bottom: 16),
       child: Stack(
         children: [
           Container(
-            padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
             decoration: BoxDecoration(
               color: const Color(0xFF0E3A43),
               borderRadius: BorderRadius.circular(12),
@@ -5237,7 +5991,7 @@ class _ResumePreviewBody extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    fontSize: 22,
+                    fontSize: ResumeTypography.name,
                     fontWeight: FontWeight.w900,
                     color: Color(0xFFEFEFEF),
                     height: 1.0,
@@ -5251,7 +6005,7 @@ class _ResumePreviewBody extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      fontSize: 10.5,
+                      fontSize: ResumeTypography.heading,
                       fontWeight: FontWeight.w700,
                       letterSpacing: 1.4,
                       color: Colors.white.withOpacity(0.82),
@@ -5265,7 +6019,7 @@ class _ResumePreviewBody extends StatelessWidget {
                     maxLines: null,
                     overflow: TextOverflow.visible,
                     style: TextStyle(
-                      fontSize: 9.5,
+                      fontSize: ResumeTypography.body,
                       height: 1.35,
                       color: Colors.white.withOpacity(0.88),
                     ),
@@ -5292,44 +6046,47 @@ class _ResumePreviewBody extends StatelessWidget {
   }
 
   Widget _templateHeaderBlackYellow(_TemplateStyle style) {
-    // Matches the "Austin Bronson" vibe: bold name + yellow rule.
+    // Matches the "Austin Bronson" vibe: bold name + yellow rule (main column).
     final role =
         data.experiences.isNotEmpty ? data.experiences.first.role : "";
     return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.only(bottom: 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
             height: 6,
             width: 150,
-            color: style.accent,
+            decoration: BoxDecoration(
+              color: style.accent,
+              borderRadius: BorderRadius.circular(1),
+            ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           Text(
             (data.name.isNotEmpty ? data.name : "Your Name").toUpperCase(),
-            style: const TextStyle(
-              fontSize: 22,
+            style: ResumeTypography.nameStyle(
+              _nameFf,
               fontWeight: FontWeight.w900,
               letterSpacing: 1.6,
-              color: Color(0xFF111827),
+              color: const Color(0xFF111827),
               height: 1.0,
             ),
           ),
           if (role.trim().isNotEmpty)
             Padding(
-              padding: const EdgeInsets.only(top: 2),
+              padding: const EdgeInsets.only(top: 4),
               child: Text(
                 role.toUpperCase(),
-                style: TextStyle(
-                  fontSize: 10,
+                style: ResumeTypography.bodyStyle(
+                  _bodyFf,
                   letterSpacing: 2.2,
                   fontWeight: FontWeight.w700,
                   color: Colors.black.withOpacity(0.55),
                 ),
               ),
             ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           Container(
             height: 1,
             width: double.infinity,
@@ -5366,7 +6123,7 @@ class _ResumePreviewBody extends StatelessWidget {
                   (data.name.isNotEmpty ? data.name : "Your Name")
                       .toUpperCase(),
                   style: const TextStyle(
-                    fontSize: 24,
+                    fontSize: ResumeTypography.name,
                     fontWeight: FontWeight.w900,
                     letterSpacing: 1.6,
                     color: Colors.white,
@@ -5379,7 +6136,7 @@ class _ResumePreviewBody extends StatelessWidget {
                     child: Text(
                       role,
                       style: TextStyle(
-                        fontSize: 11,
+                        fontSize: ResumeTypography.body,
                         fontWeight: FontWeight.w700,
                         letterSpacing: 1.2,
                         color: Colors.white.withOpacity(0.85),
@@ -5400,8 +6157,9 @@ class _ResumePreviewBody extends StatelessWidget {
     final role =
         data.experiences.isNotEmpty ? data.experiences.first.role : "";
     return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.only(bottom: 32),
       child: Stack(
+        clipBehavior: Clip.none,
         children: [
           // Banner
           Container(
@@ -5417,17 +6175,17 @@ class _ResumePreviewBody extends StatelessWidget {
                 end: Alignment.bottomRight,
               ),
             ),
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+            padding: const EdgeInsets.fromLTRB(104, 16, 16, 16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   (data.name.isNotEmpty ? data.name : "Your Name")
                       .toUpperCase(),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 17,
+                  maxLines: 2,
+                  overflow: TextOverflow.visible,
+                  style: ResumeTypography.nameStyle(
+                    _nameFf,
                     fontWeight: FontWeight.w900,
                     letterSpacing: 1.8,
                     color: Colors.white,
@@ -5447,7 +6205,7 @@ class _ResumePreviewBody extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      fontSize: 9.5,
+                      fontSize: ResumeTypography.body,
                       letterSpacing: 2.0,
                       fontWeight: FontWeight.w800,
                       color: Colors.white.withOpacity(0.75),
@@ -5529,7 +6287,7 @@ class _ResumePreviewBody extends StatelessWidget {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                          fontSize: 18,
+                          fontSize: ResumeTypography.name,
                           fontWeight: FontWeight.w900,
                           color: Colors.white,
                           height: 1.0,
@@ -5543,7 +6301,7 @@ class _ResumePreviewBody extends StatelessWidget {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
-                              fontSize: 10,
+                              fontSize: ResumeTypography.body,
                               fontWeight: FontWeight.w700,
                               color: Colors.white.withOpacity(0.8),
                             ),
@@ -5562,11 +6320,16 @@ class _ResumePreviewBody extends StatelessWidget {
               color: style.accent.withOpacity(0.95),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _miniContactChip(Icons.email, data.email),
-                const SizedBox(width: 10),
-                _miniContactChip(Icons.phone, data.phone),
+                if (data.email.trim().isNotEmpty)
+                  _miniContactChip(Icons.email, data.email),
+                if (data.email.trim().isNotEmpty &&
+                    data.phone.trim().isNotEmpty)
+                  const SizedBox(height: 6),
+                if (data.phone.trim().isNotEmpty)
+                  _miniContactChip(Icons.phone, data.phone),
               ],
             ),
           ),
@@ -5601,7 +6364,7 @@ class _ResumePreviewBody extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      fontSize: 18,
+                      fontSize: ResumeTypography.name,
                       fontWeight: FontWeight.w900,
                       color: Colors.white,
                       height: 1.0,
@@ -5614,7 +6377,7 @@ class _ResumePreviewBody extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontSize: 10,
+                        fontSize: ResumeTypography.body,
                         fontWeight: FontWeight.w700,
                         color: Colors.white.withOpacity(0.75),
                       ),
@@ -5714,7 +6477,7 @@ class _ResumePreviewBody extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                        fontSize: 16,
+                        fontSize: ResumeTypography.name,
                         fontWeight: FontWeight.w900,
                         color: Colors.white,
                         height: 1.0,
@@ -5727,7 +6490,7 @@ class _ResumePreviewBody extends StatelessWidget {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize: 9,
+                          fontSize: ResumeTypography.body,
                           fontWeight: FontWeight.w800,
                           letterSpacing: 1.3,
                           color: Colors.white.withOpacity(0.72),
@@ -5748,29 +6511,30 @@ class _ResumePreviewBody extends StatelessWidget {
     final v = value.trim();
     if (v.isEmpty) return const SizedBox.shrink();
     final uri = _contactLaunchUri(icon, v);
-    return Expanded(
-      child: _tappableContactRow(
+    return _tappableContactRow(
         uri: uri,
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Icon(icon, size: 14, color: Colors.white.withOpacity(0.95)),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
                 v,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+                maxLines: 2,
+                overflow: TextOverflow.visible,
                 style: TextStyle(
+                  fontFamily: _bodyFf,
                   color: Colors.white,
-                  fontSize: 9.5,
+                  fontSize: ResumeTypography.body,
                   fontWeight: FontWeight.w700,
+                  height: 1.2,
                   decoration: uri == null ? null : TextDecoration.underline,
                 ),
               ),
             ),
           ],
         ),
-      ),
     );
   }
 
@@ -6158,130 +6922,199 @@ class _PreviewMetrics {
   /// Logical “paper” width; page height uses [PdfService.styledTemplateExportPageFormat] ratio.
   static const double pageWidth = 600.0;
 
+  /// Usable main-column height on template 1 page 1 (banner is outside this column).
+  static double template1Page1RightHeight(
+    double pageHeight, {
+    double bannerHeight = _kTemplate1BannerHeight,
+  }) {
+    const pageFooterBar = 28.0;
+    const page1TopPad = 12.0;
+    const page1BottomPad = 26.0;
+    return pageHeight -
+        pageFooterBar -
+        bannerHeight -
+        page1TopPad -
+        page1BottomPad;
+  }
+
+  /// Usable main-column height on template 1 pages 2+ (full-width, no top banner).
+  static double template1ContinuationRightHeight(double pageHeight) {
+    const pageFooterBar = 28.0;
+    const padTop = 26.0;
+    const padBottom = 26.0;
+    return pageHeight - pageFooterBar - padTop - padBottom;
+  }
+
+  static int _charsPerLine(double availableWidth, {bool template1 = false}) =>
+      math.max(
+        24,
+        (availableWidth / (template1 ? 6.15 : 5.1)).floor(),
+      );
+
+  static double stackedSectionsHeight({
+    required List<Map<String, dynamic>> sections,
+    required double availableWidth,
+    required String templateId,
+  }) {
+    var total = 0.0;
+    for (final s in sections) {
+      total += sectionHeight(s, availableWidth: availableWidth, templateId: templateId);
+    }
+    return total;
+  }
+
+  static double sectionHeight(
+    Map<String, dynamic> s, {
+    required double availableWidth,
+    required String templateId,
+  }) {
+    final type = s["type"];
+    final t1 = templateId == "1";
+    final charsPerLine = _charsPerLine(availableWidth, template1: t1);
+    double h = 0;
+
+    if (type == "section") {
+      final title = (s["title"] ?? "").toString().toLowerCase();
+      final isProfileSummary =
+          title.contains("profile") || title.contains("summary");
+      final content = (s["content"] ?? "").toString();
+      var lines = (content.length / charsPerLine).ceil();
+      if (!t1 && isProfileSummary) lines = math.min(lines, 8);
+      h = (t1 ? 32 : 46) +
+          6 +
+          lines * (t1 ? 14.0 : (templateId == "2" ? 16.4 : 15.0));
+    } else if (type == "experience") {
+      final items = (s["items"] as List?) ?? const [];
+      final t1wh = (s["t1_show_work_heading"] as bool?) ?? true;
+      final t1jh = (s["t1_show_job_header"] as bool?) ?? true;
+      if (templateId == "2") {
+        h = t1wh ? 52 : 8;
+        for (var i = 0; i < items.length; i++) {
+          final exp = items[i] as Experience;
+          final bullets = exp.description
+              .map((b) => b.trim())
+              .where((b) => b.isNotEmpty)
+              .toList();
+          var introExtra = 0.0;
+          var n = bullets.length;
+          if (bullets.isNotEmpty &&
+              ExperienceDisplay.looksLikeSummaryIntro(bullets.first)) {
+            introExtra = 46;
+            n = bullets.length - 1;
+          }
+          h += (t1jh ? 56 : 10);
+          h += introExtra;
+          if (n > 0 || introExtra > 0) h += 10;
+          h += n * 23.0;
+          h += 18;
+        }
+        h += 20;
+      } else {
+        h = t1wh ? 32 + 6 : 4;
+        for (var i = 0; i < items.length; i++) {
+          final exp = items[i] as Experience;
+          final bullets = exp.description
+              .map((b) => b.trim())
+              .where((b) => b.isNotEmpty)
+              .toList();
+          h += t1jh ? 36 : 6;
+          for (final b in bullets) {
+            final lines = math.max(1, (b.length / charsPerLine).ceil());
+            h += lines * 14.0 + 4;
+          }
+          if (t1 && i < items.length - 1) h += 5;
+        }
+        h += t1 ? 4 : 18;
+      }
+    } else if (type == "education") {
+      final items = (s["items"] as List?) ?? const [];
+      h = t1 ? 32 + 6 + items.length * 28.0 : 52 + items.length * 44.0;
+    } else if (type == "skills_categorized") {
+      final groups = (s["groups"] as List?) ?? const [];
+      h = t1 ? 32 + 6 : 52;
+      for (final g in groups) {
+        final value =
+            (g is Map && g["value"] != null) ? g["value"].toString() : "";
+        if (t1) {
+          final parts = _splitSkillListValue(value).length;
+          final approxChipsPerRow = math.max(1, (availableWidth / 72).floor());
+          final chipRows = math.max(1, (parts / approxChipsPerRow).ceil());
+          h += 18 + chipRows * 20.0;
+        } else {
+          h += 20;
+          h += (value.length / charsPerLine).ceil() * 15.0;
+        }
+      }
+    } else if (type == "projects") {
+      final items = (s["items"] as List?) ?? const [];
+      h = (t1 ? 32 + 6 : 52) + items.length * (t1 ? 16.0 : 22.0);
+    } else if (type == "courses" || type == "certifications") {
+      final items = (s["items"] as List?) ?? const [];
+      h = t1 ? 32 + 6 : 52;
+      for (final it in items) {
+        final line = it.toString();
+        final wrapped = math.max(1, (line.length / charsPerLine).ceil());
+        h += (t1 ? 14.0 : 17.0) * wrapped + (t1 ? 4.0 : 6.0);
+      }
+    } else if (type == "skills") {
+      final items = (s["items"] as List?) ?? const [];
+      if (t1) {
+        h = 32 + 6;
+        final approxChipsPerRow = math.max(1, (availableWidth / 68).floor());
+        final chipRows = math.max(1, (items.length / approxChipsPerRow).ceil());
+        h += chipRows * 20.0;
+      } else {
+        final joined = items.map((e) => e.toString()).join(", ");
+        final lines = math.max(1, (joined.length / charsPerLine).ceil());
+        h = 52 + lines * 16.0;
+      }
+    } else if (type == "achievement") {
+      final items = (s["items"] as List?) ?? const [];
+      h = (t1 ? 32 + 6 : 52) + items.length * (t1 ? 15.0 : 18.0);
+    } else if (type == "references") {
+      final items = (s["items"] as List?) ?? const [];
+      h = t1 ? 32 + 6 + items.length * 30.0 : 56 + items.length * 42.0;
+    } else {
+      h = 56;
+    }
+    return h;
+  }
+
   static int rightSectionCapacity({
     required double availableHeight,
     required double availableWidth,
     required List<Map<String, dynamic>> sections,
     String templateId = "",
   }) {
-    // Rough height model to avoid overflow. Packs as many sections as fit.
+    if (templateId == '1') {
+      var count = 0;
+      for (var i = 0; i < sections.length; i++) {
+        final stacked = stackedSectionsHeight(
+          sections: sections.sublist(0, i + 1),
+          availableWidth: availableWidth,
+          templateId: '1',
+        );
+        if (stacked <= availableHeight) {
+          count = i + 1;
+        } else {
+          break;
+        }
+      }
+      return math.max(1, count);
+    }
+
     double used = 0;
     int count = 0;
-
-    // Chars per line: slightly tighter than 5.2px/char with compact preview fonts.
-    final charsPerLine = math.max(24, (availableWidth / 4.95).floor());
-    final t1 = templateId == "1";
-
     for (final s in sections) {
-      final type = s["type"];
-      double h = 0;
-
-      if (type == "section") {
-        final title = (s["title"] ?? "").toString().toLowerCase();
-        final isProfileSummary =
-            title.contains("profile") || title.contains("summary");
-        final content = (s["content"] ?? "").toString();
-        var lines = (content.length / charsPerLine).ceil();
-        // Prevent long summaries from consuming an entire first page in preview.
-        // This keeps page 1 showing Experience/Education like real ATS resumes.
-        if (!t1 && isProfileSummary) lines = math.min(lines, 8);
-        h = 46 +
-            lines *
-                (t1
-                    ? 13.6
-                    : (templateId == "2" ? 16.4 : 15.0));
-        if (t1) h += 2;
-      } else if (type == "experience") {
-        final items = (s["items"] as List?) ?? const [];
-        final t1wh = (s["t1_show_work_heading"] as bool?) ?? true;
-        final t1jh = (s["t1_show_job_header"] as bool?) ?? true;
-        if (templateId == "2") {
-          h = t1wh ? 52 : 8;
-          for (var i = 0; i < items.length; i++) {
-            final exp = items[i] as Experience;
-            final bullets = exp.description
-                .map((b) => b.trim())
-                .where((b) => b.isNotEmpty)
-                .toList();
-            var introExtra = 0.0;
-            var n = bullets.length;
-            if (bullets.length >= 2 &&
-                (bullets.first.length > 140 ||
-                    bullets.first.contains('.'))) {
-              introExtra = 46;
-              n = bullets.length - 1;
-            }
-            h += (t1jh ? 56 : 10);
-            h += introExtra;
-            if (n > 0 || introExtra > 0) h += 10;
-            h += n * 23.0;
-            h += 18;
-          }
-          h += 20;
-        } else {
-          // Slightly optimistic for template 1 so pages 1–2 pack like page 3; clip is rare.
-          h = t1wh ? 46 : 8;
-          for (var i = 0; i < items.length; i++) {
-            final exp = items[i] as Experience;
-            final n =
-                exp.description.where((b) => b.trim().isNotEmpty).length;
-            h += (t1jh ? 48 : 10) + n * (t1 ? 14.8 : 17.0);
-          }
-          h += t1 ? 14 : 18;
-        }
-      } else if (type == "education") {
-        final items = (s["items"] as List?) ?? const [];
-        h = t1 ? 44 + items.length * 34.0 : 52 + items.length * 44.0;
-      } else if (type == "skills_categorized") {
-        final groups = (s["groups"] as List?) ?? const [];
-        h = t1 ? 44 : 52;
-        for (final g in groups) {
-          final value = (g is Map && g["value"] != null)
-              ? g["value"].toString()
-              : "";
-          if (t1) {
-            final parts = _splitSkillListValue(value).length;
-            final approxChipsPerRow =
-                math.max(1, (availableWidth / 72).floor());
-            final chipRows = math.max(1, (parts / approxChipsPerRow).ceil());
-            h += 22 + chipRows * 26.0;
-          } else {
-            h += 20;
-            h += (value.length / charsPerLine).ceil() * 15.0;
-          }
-        }
-      } else if (type == "projects") {
-        final items = (s["items"] as List?) ?? const [];
-        h = 52 + items.length * 22.0;
-      } else if (type == "courses" || type == "certifications") {
-        final items = (s["items"] as List?) ?? const [];
-        h = t1 ? 44 : 52;
-        for (final it in items) {
-          final line = it.toString();
-          final wrapped = math.max(1, (line.length / charsPerLine).ceil());
-          h += (t1 ? 15.8 : 17.0) * wrapped + (t1 ? 5.0 : 6.0);
-        }
-      } else if (type == "skills") {
-        final items = (s["items"] as List?) ?? const [];
-        final joined = items.map((e) => e.toString()).join(", ");
-        final lines = math.max(1, (joined.length / charsPerLine).ceil());
-        h = (t1 ? 44 : 52) + lines * (t1 ? 15.0 : 16.0);
-      } else if (type == "achievement") {
-        final items = (s["items"] as List?) ?? const [];
-        h = 52 + items.length * 18.0;
-      } else if (type == "references") {
-        final items = (s["items"] as List?) ?? const [];
-        h = 56 + items.length * 42.0;
-      } else {
-        // Unknown section types: assume small.
-        h = 56;
-      }
-
+      final h = sectionHeight(
+        s,
+        availableWidth: availableWidth,
+        templateId: templateId,
+      );
       if (used + h > availableHeight) break;
       used += h;
       count++;
     }
-
     return math.max(1, count);
   }
 }
